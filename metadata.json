@@ -1,0 +1,6 @@
+{
+  "name": "ToolShop ERP",
+  "description": "Sistema de gestão integrado para ferramentaria: acompanhamento de projetos de moldes e estampos, componentes, operações de usinagem e apontamento de horas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

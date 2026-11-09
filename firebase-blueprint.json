@@ -1,0 +1,251 @@
+{
+  "entities": {
+    "Cliente": {
+      "title": "Cliente",
+      "description": "Cadastro de cliente da ferramentaria",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "nome": { "type": "string", "maxLength": 200 },
+        "cnpj": { "type": "string", "maxLength": 30 },
+        "contato": { "type": "string", "maxLength": 100 },
+        "telefone": { "type": "string", "maxLength": 50 },
+        "email": { "type": "string", "maxLength": 100 },
+        "ativo": { "type": "boolean" },
+        "criado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "nome", "ativo"]
+    },
+    "CentroCusto": {
+      "title": "CentroCusto",
+      "description": "Centro de custo interno ou terceirizado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "nome": { "type": "string", "maxLength": 100 },
+        "codigo": { "type": "string", "maxLength": 50 },
+        "origem": { "type": "string", "enum": ["interno", "terceirizado"] },
+        "categoria": { "type": "string", "maxLength": 100 },
+        "tipo": { "type": "string", "maxLength": 100 },
+        "modelo_custo": { "type": "string", "enum": ["hora", "peca", "kg", "servico"] },
+        "valor_unitario": { "type": "number" },
+        "custo_hora": { "type": "number" },
+        "fornecedor_nome": { "type": "string", "maxLength": 150 },
+        "fornecedor_contato": { "type": "string", "maxLength": 150 },
+        "prazo_padrao_dias": { "type": "number" },
+        "ativo": { "type": "boolean" },
+        "observacoes": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "empresa_id", "nome", "origem", "categoria", "modelo_custo", "ativo"]
+    },
+    "Operador": {
+      "title": "Operador",
+      "description": "Operador fabril para registro de apontamento",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "nome": { "type": "string", "maxLength": 150 },
+        "matricula": { "type": "string", "maxLength": 50 },
+        "turno": { "type": "string", "maxLength": 50 },
+        "ativo": { "type": "boolean" },
+        "pin_hash": { "type": "string" },
+        "pin_salt": { "type": "string" },
+        "pin_iterations": { "type": "number" }
+      },
+      "required": ["id", "empresa_id", "nome", "matricula", "ativo"]
+    },
+    "Projeto": {
+      "title": "Projeto",
+      "description": "Molde ou estampo em fabricação",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "cliente_id": { "type": "string" },
+        "codigo": { "type": "string", "maxLength": 50 },
+        "descricao": { "type": "string", "maxLength": 250 },
+        "tipo": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["Aguardando", "Em andamento", "Em tryout", "Concluído", "Cancelado"] },
+        "prazo": { "type": "string" },
+        "data_inicio": { "type": "string" },
+        "observacoes": { "type": "string", "maxLength": 1000 },
+        "criado_em": { "type": "string" },
+        "atualizado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "cliente_id", "codigo", "descricao", "status"]
+    },
+    "Componente": {
+      "title": "Componente",
+      "description": "Peça integrante de um projeto",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "projeto_id": { "type": "string" },
+        "codigo": { "type": "string", "maxLength": 50 },
+        "nome": { "type": "string", "maxLength": 150 },
+        "tipo": { "type": "string", "enum": ["fabricado", "comprado", "estoque"] },
+        "quantidade": { "type": "number" },
+        "material": { "type": "string", "maxLength": 100 },
+        "dimensoes": { "type": "string", "maxLength": 100 },
+        "formato": { "type": "string", "maxLength": 50 },
+        "tratamento": { "type": "string", "maxLength": 150 },
+        "observacoes": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["Pendente", "Em produção", "Concluído", "Comprado", "Em estoque"] },
+        "fornecedor": { "type": "string", "maxLength": 150 },
+        "num_lista": { "type": "string", "maxLength": 50 },
+        "id_refer_pai": { "type": "string", "maxLength": 50 },
+        "modelo_origem_id": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "projeto_id", "nome", "quantidade", "material", "status"]
+    },
+    "Operacao": {
+      "title": "Operacao",
+      "description": "Etapa do roteiro de usinagem ou processo terceirizado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "componente_id": { "type": "string" },
+        "centro_custo_id": { "type": "string" },
+        "maquina_id": { "type": "string" },
+        "sequencia": { "type": "number" },
+        "descricao": { "type": "string", "maxLength": 200 },
+        "horas_estimadas": { "type": "number" },
+        "prazo_dias": { "type": "number" },
+        "peso_kg": { "type": "number" },
+        "fornecedor": { "type": "string", "maxLength": 150 },
+        "valor_orcado": { "type": "number" },
+        "valor_real": { "type": "number" },
+        "data_envio": { "type": "string" },
+        "retorno_previsto": { "type": "string" },
+        "data_retorno_real": { "type": "string" },
+        "documento": { "type": "string", "maxLength": 100 },
+        "observacoes": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["Pendente", "Em andamento", "Concluída", "Enviada", "Retornada"] }
+      },
+      "required": ["id", "empresa_id", "componente_id", "centro_custo_id", "sequencia", "descricao", "status"]
+    },
+    "Apontamento": {
+      "title": "Apontamento",
+      "description": "Registro de tempo de usinagem do operador na máquina",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "operacao_id": { "type": "string" },
+        "operador_id": { "type": "string" },
+        "inicio": { "type": "string" },
+        "fim": { "type": "string" },
+        "editado_manualmente": { "type": "boolean" },
+        "justificativa_edicao": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "empresa_id", "operacao_id", "operador_id", "inicio"]
+    },
+    "Usuario": {
+      "title": "Usuario",
+      "description": "Usuário autenticado do ToolShop ERP",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "nome": { "type": "string", "maxLength": 150 },
+        "email": { "type": "string", "maxLength": 150 },
+        "matricula": { "type": "string", "maxLength": 50 },
+        "perfil": { "type": "string", "enum": ["admin", "gerente", "lider", "operador"] },
+        "ativo": { "type": "boolean" },
+        "senha_hash": { "type": "string" },
+        "salt": { "type": "string" },
+        "iterations": { "type": "number" },
+        "pin_hash": { "type": "string" },
+        "pin_salt": { "type": "string" },
+        "pin_iterations": { "type": "number" },
+        "criado_em": { "type": "string" },
+        "atualizado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "nome", "email", "perfil", "ativo"]
+    },
+    "ModeloComponente": {
+      "title": "ModeloComponente",
+      "description": "Componente modelo com roteiro pré-definido na Biblioteca",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "codigo": { "type": "string", "maxLength": 50 },
+        "nome": { "type": "string", "maxLength": 150 },
+        "categoria": { "type": "string", "maxLength": 100 },
+        "material": { "type": "string", "maxLength": 100 },
+        "observacoes": { "type": "string", "maxLength": 500 },
+        "criado_em": { "type": "string" },
+        "operacoes": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      },
+      "required": ["id", "empresa_id", "codigo", "nome", "categoria", "material"]
+    },
+    "HistoricoImportacao": {
+      "title": "HistoricoImportacao",
+      "description": "Log de importação de planilhas",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "usuario_id": { "type": "string" },
+        "usuario_nome": { "type": "string", "maxLength": 150 },
+        "data_hora": { "type": "string" },
+        "tipo": { "type": "string", "maxLength": 50 },
+        "arquivo_nome": { "type": "string", "maxLength": 200 },
+        "total_linhas": { "type": "number" },
+        "status": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "empresa_id", "usuario_id", "usuario_nome", "data_hora", "tipo", "arquivo_nome"]
+    }
+  },
+  "firestore": {
+    "/clientes/{clienteId}": {
+      "schema": { "$ref": "#/entities/Cliente" },
+      "description": "Coleção de clientes da ferramentaria"
+    },
+    "/centros_custo/{centroCustoId}": {
+      "schema": { "$ref": "#/entities/CentroCusto" },
+      "description": "Coleção de centros de custo internos e terceirizados"
+    },
+    "/operadores/{operadorId}": {
+      "schema": { "$ref": "#/entities/Operador" },
+      "description": "Coleção de operadores de máquinas"
+    },
+    "/projetos/{projetoId}": {
+      "schema": { "$ref": "#/entities/Projeto" },
+      "description": "Coleção de projetos de ferramentaria"
+    },
+    "/componentes/{componenteId}": {
+      "schema": { "$ref": "#/entities/Componente" },
+      "description": "Coleção de componentes/peças dos projetos"
+    },
+    "/operacoes/{operacaoId}": {
+      "schema": { "$ref": "#/entities/Operacao" },
+      "description": "Coleção de operações do roteiro de fabricação"
+    },
+    "/apontamentos/{apontamentoId}": {
+      "schema": { "$ref": "#/entities/Apontamento" },
+      "description": "Coleção de apontamentos de horas de usinagem"
+    },
+    "/usuarios/{usuarioId}": {
+      "schema": { "$ref": "#/entities/Usuario" },
+      "description": "Coleção de usuários e credenciais do ERP"
+    },
+    "/modelos_componentes/{modeloId}": {
+      "schema": { "$ref": "#/entities/ModeloComponente" },
+      "description": "Biblioteca padrão de modelos de componentes"
+    },
+    "/historico_importacoes/{historicoId}": {
+      "schema": { "$ref": "#/entities/HistoricoImportacao" },
+      "description": "Auditoria de importações de planilhas"
+    }
+  }
+}

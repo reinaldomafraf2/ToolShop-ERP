@@ -1,0 +1,210 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all unmapped paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Health check collection for testFirestoreConnection
+    match /test/{testId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Reusable validation primitives
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSystemAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'reinaldo.mafraf2@gmail.com' ||
+        (request.auth.token.email_verified == true && request.auth.token.email == 'reinaldo.mafraf2@gmail.com')
+      );
+    }
+
+    // --- 1. CLIENTES ---
+    function isValidCliente(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 200 &&
+             data.ativo is bool;
+    }
+
+    match /clientes/{clienteId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(clienteId) && isValidCliente(incoming());
+      allow update: if isSignedIn() && isValidId(clienteId) && isValidCliente(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(clienteId);
+    }
+
+    // --- 2. CENTROS DE CUSTO ---
+    function isValidCentroCusto(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 100 &&
+             data.origem in ['interno', 'terceirizado'] &&
+             data.modelo_custo in ['hora', 'peca', 'kg', 'servico'] &&
+             data.ativo is bool;
+    }
+
+    match /centros_custo/{centroCustoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(centroCustoId) && isValidCentroCusto(incoming());
+      allow update: if isSignedIn() && isValidId(centroCustoId) && isValidCentroCusto(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(centroCustoId);
+    }
+
+    // --- 3. OPERADORES ---
+    function isValidOperador(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 150 &&
+             data.matricula is string && data.matricula.size() > 0 && data.matricula.size() <= 50 &&
+             data.ativo is bool;
+    }
+
+    match /operadores/{operadorId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(operadorId) && isValidOperador(incoming());
+      allow update: if isSignedIn() && isValidId(operadorId) && isValidOperador(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(operadorId);
+    }
+
+    // --- 4. PROJETOS ---
+    function isValidProjeto(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.cliente_id is string && data.cliente_id.size() <= 128 &&
+             data.codigo is string && data.codigo.size() > 0 && data.codigo.size() <= 50 &&
+             data.descricao is string && data.descricao.size() > 0 && data.descricao.size() <= 250 &&
+             data.status in ['Aguardando', 'Em andamento', 'Em tryout', 'Concluído', 'Cancelado'];
+    }
+
+    match /projetos/{projetoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(projetoId) && isValidProjeto(incoming());
+      allow update: if isSignedIn() && isValidId(projetoId) && isValidProjeto(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(projetoId);
+    }
+
+    // --- 5. COMPONENTES ---
+    function isValidComponente(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.projeto_id is string && data.projeto_id.size() <= 128 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 150 &&
+             data.quantidade is number && data.quantidade > 0 &&
+             data.material is string && data.material.size() > 0 && data.material.size() <= 100 &&
+             data.status in ['Pendente', 'Em produção', 'Concluído', 'Comprado', 'Em estoque'];
+    }
+
+    match /componentes/{componenteId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(componenteId) && isValidComponente(incoming());
+      allow update: if isSignedIn() && isValidId(componenteId) && isValidComponente(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(componenteId);
+    }
+
+    // --- 6. OPERAÇÕES ---
+    function isValidOperacao(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.componente_id is string && data.componente_id.size() <= 128 &&
+             data.centro_custo_id is string && data.centro_custo_id.size() <= 128 &&
+             data.sequencia is number &&
+             data.descricao is string && data.descricao.size() > 0 && data.descricao.size() <= 200 &&
+             data.status in ['Pendente', 'Em andamento', 'Concluída', 'Enviada', 'Retornada'];
+    }
+
+    match /operacoes/{operacaoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(operacaoId) && isValidOperacao(incoming());
+      allow update: if isSignedIn() && isValidId(operacaoId) && isValidOperacao(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(operacaoId);
+    }
+
+    // --- 7. APONTAMENTOS ---
+    function isValidApontamento(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.operacao_id is string && data.operacao_id.size() <= 128 &&
+             data.operador_id is string && data.operador_id.size() <= 128 &&
+             data.inicio is string && data.inicio.size() > 0;
+    }
+
+    match /apontamentos/{apontamentoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(apontamentoId) && isValidApontamento(incoming());
+      allow update: if isSignedIn() && isValidId(apontamentoId) && isValidApontamento(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(apontamentoId);
+    }
+
+    // --- 8. USUÁRIOS ---
+    function isValidUsuario(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 150 &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 150 &&
+             data.perfil in ['admin', 'gerente', 'lider', 'operador'] &&
+             data.ativo is bool;
+    }
+
+    match /usuarios/{usuarioId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(usuarioId) && isValidUsuario(incoming());
+      allow update: if isSignedIn() && isValidId(usuarioId) && isValidUsuario(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(usuarioId);
+    }
+
+    // --- 9. MODELOS DE COMPONENTES ---
+    function isValidModelo(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.codigo is string && data.codigo.size() > 0 && data.codigo.size() <= 50 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 150 &&
+             data.categoria is string && data.categoria.size() > 0 && data.categoria.size() <= 100 &&
+             data.material is string && data.material.size() > 0 && data.material.size() <= 100;
+    }
+
+    match /modelos_componentes/{modeloId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(modeloId) && isValidModelo(incoming());
+      allow update: if isSignedIn() && isValidId(modeloId) && isValidModelo(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(modeloId);
+    }
+
+    // --- 10. HISTÓRICO DE IMPORTAÇÕES ---
+    function isValidHistorico(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.usuario_id is string && data.usuario_id.size() <= 128 &&
+             data.usuario_nome is string && data.usuario_nome.size() > 0 && data.usuario_nome.size() <= 150 &&
+             data.data_hora is string && data.data_hora.size() > 0 &&
+             data.tipo is string && data.tipo.size() > 0 && data.tipo.size() <= 50 &&
+             data.arquivo_nome is string && data.arquivo_nome.size() > 0 && data.arquivo_nome.size() <= 200;
+    }
+
+    match /historico_importacoes/{historicoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(historicoId) && isValidHistorico(incoming());
+      allow update: if isSignedIn() && isValidId(historicoId) && isValidHistorico(incoming()) && incoming().id == existing().id;
+      allow delete: if isSystemAdmin() && isValidId(historicoId);
+    }
+  }
+}
