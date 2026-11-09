@@ -229,6 +229,25 @@ export interface Usuario {
   ultimo_login?: string; // ISO string
 }
 
+export interface OperadorCentroCusto {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  operador_id: string; // UUID do Operador
+  centro_custo_id: string; // UUID do Centro de Custo interno
+  criado_em: string; // ISO string
+  atualizado_por?: string; // Nome do usuário que realizou a alteração
+  atualizado_em?: string; // ISO string
+}
+
+export interface ConfiguracoesSistema {
+  id: string; // UUID ou 'config_padrao'
+  empresa_id: string;
+  restringir_postos: boolean; // Padrão: true (Restringir operadores aos seus postos de trabalho)
+  liberar_apenas_proxima_operacao: boolean; // Padrão: false (Liberar uma operação somente quando a anterior estiver concluída)
+  atualizado_por?: string;
+  atualizado_em?: string;
+}
+
 export type ViewTab =
   | 'painel'
   | 'projetos'
@@ -239,5 +258,7 @@ export type ViewTab =
   | 'clientes'
   | 'apontamento'
   | 'usuarios'
+  | 'configuracoes'
   | 'sem_permissao';
+
 

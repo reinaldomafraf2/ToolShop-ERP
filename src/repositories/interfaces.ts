@@ -11,7 +11,10 @@ import {
   ModeloComponente,
   HistoricoImportacao,
   OrigemCentroCusto,
+  OperadorCentroCusto,
+  ConfiguracoesSistema,
 } from '../types';
+
 
 export interface IBaseRepository<T extends { id: string; empresa_id: string }> {
   getAll(empresaId?: string): Promise<T[]>;
@@ -74,4 +77,16 @@ export interface IModeloComponenteRepository extends IBaseRepository<ModeloCompo
 export interface IHistoricoImportacaoRepository extends IBaseRepository<HistoricoImportacao> {
   getRecentes(limite?: number, empresaId?: string): Promise<HistoricoImportacao[]>;
 }
+
+export interface IOperadorCentroCustoRepository extends IBaseRepository<OperadorCentroCusto> {
+  getByOperadorId(operadorId: string, empresaId?: string): Promise<OperadorCentroCusto[]>;
+  getByCentroCustoId(centroCustoId: string, empresaId?: string): Promise<OperadorCentroCusto[]>;
+  deleteByOperadorECentroCusto(operadorId: string, centroCustoId: string, empresaId?: string): Promise<boolean>;
+}
+
+export interface IConfiguracoesRepository extends IBaseRepository<ConfiguracoesSistema> {
+  getConfig(empresaId?: string): Promise<ConfiguracoesSistema>;
+  updateConfig(updates: Partial<ConfiguracoesSistema>, empresaId?: string): Promise<ConfiguracoesSistema>;
+}
+
 

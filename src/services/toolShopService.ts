@@ -15,6 +15,9 @@ import {
   ModeloOperacao,
   HistoricoImportacao,
   TipoComponente,
+  OperadorCentroCusto,
+  ConfiguracoesSistema,
+  Usuario,
 } from '../types';
 import {
   IClienteRepository,
@@ -27,6 +30,8 @@ import {
   IApontamentoRepository,
   IModeloComponenteRepository,
   IHistoricoImportacaoRepository,
+  IOperadorCentroCustoRepository,
+  IConfiguracoesRepository,
 } from '../repositories/interfaces';
 import {
   clienteRepository,
@@ -38,9 +43,13 @@ import {
   apontamentoRepository,
   modeloComponenteRepository,
   historicoImportacaoRepository,
+  operadorCentroCustoRepository,
+  configuracoesRepository,
   syncSeedDataToFirestore,
+  purgeExampleDataFromFirestore,
 } from '../repositories/firestoreRepositories';
 import { initializeSeedData } from '../repositories/localStorageRepositories';
+import { isExampleItem } from '../data/seedData';
 import { calculateDurationHours } from '../utils/formatters';
 import { DEFAULT_EMPRESA_ID } from '../utils/uuid';
 
@@ -56,13 +65,16 @@ export class ToolShopService {
     public readonly operacoesRepo: IOperacaoRepository,
     public readonly apontamentosRepo: IApontamentoRepository,
     public readonly modelosRepo: IModeloComponenteRepository,
-    public readonly historicoRepo: IHistoricoImportacaoRepository
+    public readonly historicoRepo: IHistoricoImportacaoRepository,
+    public readonly operadorCentrosRepo: IOperadorCentroCustoRepository = operadorCentroCustoRepository,
+    public readonly configuracoesRepo: IConfiguracoesRepository = configuracoesRepository
   ) {
     this.maquinasRepo = this.centrosCustoRepo;
     // Inicializa o seed caso seja a primeira execução e sincroniza no Firestore
     initializeSeedData(false);
     syncSeedDataToFirestore().catch(() => {});
   }
+
 
   // --- CLIENTES ---
   async getClientes(empresaId: string = DEFAULT_EMPRESA_ID): Promise<Cliente[]> {
@@ -287,6 +299,188 @@ export class ToolShopService {
     }
     return this.operadoresRepo.delete(id);
   }
+
+  // --- VÍNCULOS OPERADOR - POSTOS DE TRABALHO (CENTROS DE CUSTO INTERNOS) ---
+  async getOperadorCentrosCusto(
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<OperadorCentroCusto[]> {
+    return this.operadorCentrosRepo.getAll(empresaId);
+  }
+
+  async getCentrosCustoDoOperador(
+    operadorId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<string[]> {
+    const vinculos = await this.operadorCentrosRepo.getByOperadorId(operadorId, empresaId);
+    return vinculos.map((v) => v.centro_custo_id);
+  }
+
+  async getOperadoresDoCentroCusto(
+    centroCustoId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<string[]> {
+    const vinculos = await this.operadorCentrosRepo.getByCentroCustoId(centroCustoId, empresaId);
+    return vinculos.map((v) => v.operador_id);
+  }
+
+  async vincularOperadorCentroCusto(
+    operadorId: string,
+    centroCustoId: string,
+    usuarioNome: string = 'Usuário',
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<OperadorCentroCusto> {
+    const centro = await this.centrosCustoRepo.getById(centroCustoId);
+    if (!centro) {
+      throw new Error('Centro de custo não encontrado.');
+    }
+    if (centro.origem !== 'interno') {
+      throw new Error('Apenas centros de custo internos podem ser vinculados como postos de trabalho.');
+    }
+    const operador = await this.operadoresRepo.getById(operadorId);
+    if (!operador) {
+      throw new Error('Operador não encontrado.');
+    }
+
+    const existentes = await this.operadorCentrosRepo.getByOperadorId(operadorId, empresaId);
+    const jaExiste = existentes.find((v) => v.centro_custo_id === centroCustoId);
+    if (jaExiste) {
+      return jaExiste;
+    }
+
+    const agora = new Date().toISOString();
+    return this.operadorCentrosRepo.create({
+      empresa_id: empresaId,
+      operador_id: operadorId,
+      centro_custo_id: centroCustoId,
+      criado_em: agora,
+      atualizado_por: usuarioNome,
+      atualizado_em: agora,
+    });
+  }
+
+  async desvincularOperadorCentroCusto(
+    operadorId: string,
+    centroCustoId: string,
+    _usuarioNome: string = 'Usuário',
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<boolean> {
+    return this.operadorCentrosRepo.deleteByOperadorECentroCusto(
+      operadorId,
+      centroCustoId,
+      empresaId
+    );
+  }
+
+  async salvarPostosDoOperador(
+    operadorId: string,
+    centroCustoIds: string[],
+    usuarioNome: string = 'Usuário',
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<void> {
+    const operador = await this.operadoresRepo.getById(operadorId);
+    if (!operador) throw new Error('Operador não encontrado.');
+
+    // Valida que todos os postos são de origem 'interno'
+    const centros = await this.centrosCustoRepo.getAll(empresaId);
+    const centroMap = new Map(centros.map((c) => [c.id, c]));
+
+    for (const cid of centroCustoIds) {
+      const c = centroMap.get(cid);
+      if (c && c.origem !== 'interno') {
+        throw new Error(
+          `O centro de custo "${c.nome}" é terceirizado e não pode ser vinculado como posto de trabalho de operador.`
+        );
+      }
+    }
+
+    const atuais = await this.operadorCentrosRepo.getByOperadorId(operadorId, empresaId);
+    const atuaisSet = new Set(atuais.map((v) => v.centro_custo_id));
+    const novosSet = new Set(centroCustoIds);
+
+    // Remover vínculos excluídos
+    for (const v of atuais) {
+      if (!novosSet.has(v.centro_custo_id)) {
+        await this.operadorCentrosRepo.delete(v.id);
+      }
+    }
+
+    // Criar novos vínculos
+    const agora = new Date().toISOString();
+    for (const cid of centroCustoIds) {
+      if (!atuaisSet.has(cid)) {
+        await this.operadorCentrosRepo.create({
+          empresa_id: empresaId,
+          operador_id: operadorId,
+          centro_custo_id: cid,
+          criado_em: agora,
+          atualizado_por: usuarioNome,
+          atualizado_em: agora,
+        });
+      }
+    }
+  }
+
+  async salvarOperadoresDoPosto(
+    centroCustoId: string,
+    operadorIds: string[],
+    usuarioNome: string = 'Usuário',
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<void> {
+    const centro = await this.centrosCustoRepo.getById(centroCustoId);
+    if (!centro) throw new Error('Centro de custo não encontrado.');
+    if (centro.origem !== 'interno') {
+      throw new Error(
+        'Apenas centros de custo internos podem ser vinculados como postos de trabalho de operadores.'
+      );
+    }
+
+    const atuais = await this.operadorCentrosRepo.getByCentroCustoId(centroCustoId, empresaId);
+    const atuaisSet = new Set(atuais.map((v) => v.operador_id));
+    const novosSet = new Set(operadorIds);
+
+    // Remover
+    for (const v of atuais) {
+      if (!novosSet.has(v.operador_id)) {
+        await this.operadorCentrosRepo.delete(v.id);
+      }
+    }
+
+    // Adicionar
+    const agora = new Date().toISOString();
+    for (const opId of operadorIds) {
+      if (!atuaisSet.has(opId)) {
+        await this.operadorCentrosRepo.create({
+          empresa_id: empresaId,
+          operador_id: opId,
+          centro_custo_id: centroCustoId,
+          criado_em: agora,
+          atualizado_por: usuarioNome,
+          atualizado_em: agora,
+        });
+      }
+    }
+  }
+
+  // --- CONFIGURAÇÕES DO SISTEMA ---
+  async getConfiguracoes(empresaId: string = DEFAULT_EMPRESA_ID): Promise<ConfiguracoesSistema> {
+    return this.configuracoesRepo.getConfig(empresaId);
+  }
+
+  async updateConfiguracoes(
+    updates: Partial<ConfiguracoesSistema>,
+    usuarioNome: string = 'Usuário',
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<ConfiguracoesSistema> {
+    return this.configuracoesRepo.updateConfig(
+      {
+        ...updates,
+        atualizado_por: usuarioNome,
+        atualizado_em: new Date().toISOString(),
+      },
+      empresaId
+    );
+  }
+
 
   // --- PROJETOS & HIERARQUIA COMPLETA ---
   async getProjetos(empresaId: string = DEFAULT_EMPRESA_ID): Promise<Projeto[]> {
@@ -577,29 +771,51 @@ export class ToolShopService {
     const compMap = new Map(componentes.map((c) => [c.id, c]));
     const projMap = new Map(projetos.map((p) => [p.id, p]));
 
-    return apontamentos
-      .map((apt) => {
-        const operacao = operacaoMap.get(apt.operacao_id);
-        const componente = operacao ? compMap.get(operacao.componente_id) : undefined;
-        const projeto = componente ? projMap.get(componente.projeto_id) : undefined;
-        const centroCustoId = operacao ? (operacao.centro_custo_id || operacao.maquina_id) : undefined;
-        const centroCusto = centroCustoId ? maquinaMap.get(centroCustoId) : undefined;
+    const result: ApontamentoComOperador[] = [];
+    for (const apt of apontamentos) {
+      if (isExampleItem(apt)) continue;
+      const operacao = operacaoMap.get(apt.operacao_id);
+      const componente = operacao ? compMap.get(operacao.componente_id) : undefined;
+      const projeto = componente ? projMap.get(componente.projeto_id) : undefined;
+      const centroCustoId = operacao ? (operacao.centro_custo_id || operacao.maquina_id) : undefined;
+      const centroCusto = centroCustoId ? maquinaMap.get(centroCustoId) : undefined;
+      const operador = opMap.get(apt.operador_id);
 
-        return {
-          ...apt,
-          operador: opMap.get(apt.operador_id),
-          operacao,
-          centro_custo: centroCusto,
-          maquina: centroCusto,
-          componente,
-          projeto,
-          duracaoHoras: calculateDurationHours(apt.inicio, apt.fim),
-        };
-      })
-      .sort((a, b) => new Date(b.inicio).getTime() - new Date(a.inicio).getTime());
+      if (!operador || !operacao || !componente || !projeto) {
+        continue;
+      }
+
+      if (
+        isExampleItem(operacao) ||
+        isExampleItem(componente) ||
+        isExampleItem(projeto) ||
+        isExampleItem(operador) ||
+        isExampleItem(centroCusto)
+      ) {
+        continue;
+      }
+
+      result.push({
+        ...apt,
+        operador,
+        operacao,
+        centro_custo: centroCusto,
+        maquina: centroCusto,
+        componente,
+        projeto,
+        duracaoHoras: calculateDurationHours(apt.inicio, apt.fim),
+      });
+    }
+
+    return result.sort((a, b) => new Date(b.inicio).getTime() - new Date(a.inicio).getTime());
   }
 
-  async iniciarApontamento(operacaoId: string, operadorId: string): Promise<Apontamento> {
+  async iniciarApontamento(
+    operacaoId: string,
+    operadorId: string,
+    usuarioLogado?: { perfil?: string } | null,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<Apontamento> {
     // Regra: um operador só pode ter um apontamento aberto por vez
     const apontamentosOperador = await this.apontamentosRepo.getByOperadorId(operadorId);
     const apontamentoAberto = apontamentosOperador.find((a) => !a.fim);
@@ -607,6 +823,44 @@ export class ToolShopService {
       throw new Error(
         'Este operador já possui um apontamento aberto no momento. Finalize o apontamento anterior antes de iniciar outro.'
       );
+    }
+
+    const op = await this.operacoesRepo.getById(operacaoId);
+    if (!op) {
+      throw new Error('Operação não encontrada.');
+    }
+
+    const centroId = op.centro_custo_id || op.maquina_id;
+    if (centroId) {
+      const centro = await this.centrosCustoRepo.getById(centroId);
+      if (centro?.origem === 'terceirizado') {
+        throw new Error('Esta operação pertence a um processo terceirizado e não permite apontamento.');
+      }
+    }
+
+    const cfg = await this.getConfiguracoes(empresaId);
+
+    // Validação de vínculo de postos: aplicada ao perfil operador (não se aplica a líder, gerente e admin)
+    const isOperador = usuarioLogado?.perfil === 'operador';
+    if (isOperador && cfg.restringir_postos) {
+      if (!centroId) {
+        throw new Error('Esta operação pertence a outro posto');
+      }
+      const postos = await this.getCentrosCustoDoOperador(operadorId, empresaId);
+      if (!postos.includes(centroId)) {
+        throw new Error('Esta operação pertence a outro posto');
+      }
+    }
+
+    // Validação de sequência (liberar apenas quando anterior concluída)
+    if (isOperador && cfg.liberar_apenas_proxima_operacao && op.componente_id) {
+      const opsComp = await this.operacoesRepo.getByComponenteId(op.componente_id, empresaId);
+      const anterioresNaoConcluidas = opsComp.filter(
+        (o) => o.sequencia < op.sequencia && o.status !== 'Concluída' && o.status !== 'Retornada'
+      );
+      if (anterioresNaoConcluidas.length > 0) {
+        throw new Error('A operação anterior deste componente ainda não foi concluída.');
+      }
     }
 
     // Registra início de apontamento com data/hora atual
@@ -622,6 +876,7 @@ export class ToolShopService {
     await this.operacoesRepo.update(operacaoId, { status: 'Em andamento' });
     return apt;
   }
+
 
   async finalizarApontamento(
     apontamentoId: string,
@@ -751,40 +1006,102 @@ export class ToolShopService {
   }
 
   async getOperacoesDisponiveis(
-    empresaId: string = DEFAULT_EMPRESA_ID
+    empresaId: string = DEFAULT_EMPRESA_ID,
+    usuarioLogado?: { perfil?: string } | null,
+    operadorId?: string
   ): Promise<OperacaoComDetalhes[]> {
-    const [operacoes, maquinas, componentes, projetos, apontamentos] = await Promise.all([
+    const [operacoes, maquinas, componentes, projetos, apontamentos, cfg] = await Promise.all([
       this.operacoesRepo.getAll(empresaId),
       this.maquinasRepo.getAll(empresaId),
       this.componentesRepo.getAll(empresaId),
       this.projetosRepo.getAll(empresaId),
       this.apontamentosRepo.getAll(empresaId),
+      this.getConfiguracoes(empresaId),
     ]);
 
     const maquinaMap = new Map(maquinas.map((m) => [m.id, m]));
     const compMap = new Map(componentes.map((c) => [c.id, c]));
     const projMap = new Map(projetos.map((p) => [p.id, p]));
 
+    const isOperador = usuarioLogado?.perfil === 'operador';
+
+    // Se o usuário logado for operador e a restrição de postos estiver ativa, busca os postos vinculados
+    let postosOperadorSet: Set<string> | null = null;
+    if (isOperador && cfg.restringir_postos) {
+      if (operadorId) {
+        const postos = await this.getCentrosCustoDoOperador(operadorId, empresaId);
+        postosOperadorSet = new Set(postos);
+      } else {
+        postosOperadorSet = new Set();
+      }
+    }
+
     // Apenas operações internas disponíveis: Pendente ou Em andamento (operações terceirizadas NÃO aparecem no apontamento)
-    const disponiveis = operacoes.filter((o) => {
+    let disponiveis = operacoes.filter((o) => {
+      if (isExampleItem(o)) return false;
       if (o.status !== 'Pendente' && o.status !== 'Em andamento') return false;
-      const centro = maquinaMap.get(o.centro_custo_id || o.maquina_id || '');
-      return centro?.origem !== 'terceirizado';
+      const comp = compMap.get(o.componente_id);
+      if (!comp || isExampleItem(comp)) return false;
+      const proj = projMap.get(comp.projeto_id);
+      if (!proj || isExampleItem(proj)) return false;
+      const centroId = o.centro_custo_id || o.maquina_id || '';
+      const centro = maquinaMap.get(centroId);
+      if (isExampleItem(centro)) return false;
+      // Operações terceirizadas nunca aparecem no apontamento
+      if (centro?.origem === 'terceirizado') return false;
+
+      // Se for operador:
+      if (isOperador) {
+        // Operações sem centro de custo definido NUNCA aparecem para o operador
+        if (!centroId || !centro) return false;
+
+        // Se restrição estiver ativa, centro precisa estar nos postos vinculados
+        if (postosOperadorSet && !postosOperadorSet.has(centroId)) {
+          return false;
+        }
+      }
+
+      return true;
     });
 
-    return disponiveis.map((op) => {
+    // Se a regra "liberar apenas próxima operação" estiver ativa e o perfil for operador:
+    if (isOperador && cfg.liberar_apenas_proxima_operacao) {
+      // Agrupa todas as operações do sistema por componente para verificar status das sequências anteriores
+      const opsPorComp = new Map<string, typeof operacoes>();
+      operacoes.forEach((o) => {
+        if (!opsPorComp.has(o.componente_id)) {
+          opsPorComp.set(o.componente_id, []);
+        }
+        opsPorComp.get(o.componente_id)!.push(o);
+      });
+
+      disponiveis = disponiveis.filter((op) => {
+        const todasDoComp = opsPorComp.get(op.componente_id) || [];
+        // Verifica se todas as anteriores com menor sequência estão Concluída ou Retornada
+        const anterioresNaoConcluidas = todasDoComp.filter(
+          (o) => o.sequencia < op.sequencia && o.status !== 'Concluída' && o.status !== 'Retornada'
+        );
+        return anterioresNaoConcluidas.length === 0;
+      });
+    }
+
+    const result: OperacaoComDetalhes[] = [];
+    for (const op of disponiveis) {
       const comp = compMap.get(op.componente_id);
       const proj = comp ? projMap.get(comp.projeto_id) : undefined;
-      const opApts = apontamentos.filter((a) => a.operacao_id === op.id);
+      if (!comp || !proj || isExampleItem(comp) || isExampleItem(proj)) continue;
+
+      const opApts = apontamentos.filter((a) => !isExampleItem(a) && a.operacao_id === op.id);
       const horasApontadas = opApts.reduce(
         (acc, a) => acc + calculateDurationHours(a.inicio, a.fim),
         0
       );
       const centroCustoId = op.centro_custo_id || op.maquina_id || '';
       const centroCusto = maquinaMap.get(centroCustoId);
+      if (isExampleItem(centroCusto)) continue;
       const valorUnitario = centroCusto?.valor_unitario ?? centroCusto?.custo_hora ?? 0;
 
-      return {
+      result.push({
         ...op,
         centro_custo_id: centroCustoId,
         maquina_id: centroCustoId,
@@ -798,9 +1115,12 @@ export class ToolShopService {
         })),
         horasApontadas,
         custoAcumulado: Number((horasApontadas * valorUnitario).toFixed(2)),
-      };
-    });
+      });
+    }
+
+    return result;
   }
+
 
   // --- STATS RESUMO DO PAINEL ---
   async getDashboardStats(empresaId: string = DEFAULT_EMPRESA_ID) {
@@ -1162,9 +1482,14 @@ export class ToolShopService {
     };
   }
 
-  // --- RESET SEED ---
-  async resetSeedData(): Promise<void> {
+  // --- PURGA DE DADOS DE EXEMPLO ---
+  async apagarDadosDeExemplo(): Promise<void> {
     initializeSeedData(true);
+    await purgeExampleDataFromFirestore();
+  }
+
+  async resetSeedData(): Promise<void> {
+    await this.apagarDadosDeExemplo();
   }
 }
 
@@ -1178,6 +1503,9 @@ export const toolShopService = new ToolShopService(
   operacaoRepository,
   apontamentoRepository,
   modeloComponenteRepository,
-  historicoImportacaoRepository
+  historicoImportacaoRepository,
+  operadorCentroCustoRepository,
+  configuracoesRepository
 );
+
 

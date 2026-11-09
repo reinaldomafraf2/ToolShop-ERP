@@ -1,9 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   CentroCusto,
   OrigemCentroCusto,
   ModeloCusto,
   CATEGORIAS_CENTRO_CUSTO_SUGESTO,
+  Operador,
+  OperadorCentroCusto,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
 import { Modal } from '../components/common/Modal';
@@ -27,7 +29,12 @@ import {
   AlertCircle,
   HelpCircle,
   CheckCircle2,
+  Users,
+  UserPlus,
+  X,
+  UserMinus,
 } from 'lucide-react';
+
 import { formatCurrencyBRL } from '../utils/formatters';
 
 interface CentrosCustoViewProps {
@@ -41,7 +48,7 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
   activeCenterIds = new Set(),
   onRefresh,
 }) => {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const canCreate = can('criar', 'centros_custo') || can('criar', 'maquinas');
   const canEdit = can('editar', 'centros_custo') || can('editar', 'maquinas');
   const canDelete = can('excluir', 'centros_custo') || can('excluir', 'maquinas');
@@ -76,7 +83,91 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
   const [deleteBlockedReason, setDeleteBlockedReason] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Estado de Operadores e Vínculos de Postos de Trabalho
+  const [operadores, setOperadores] = useState<Operador[]>([]);
+  const [vinculos, setVinculos] = useState<OperadorCentroCusto[]>([]);
+  const [selectedPostoParaOperadores, setSelectedPostoParaOperadores] = useState<CentroCusto | null>(
+    null
+  );
+  const [operadorParaAdicionarId, setOperadorParaAdicionarId] = useState<string>('');
+  const [isUpdatingVinculos, setIsUpdatingVinculos] = useState<boolean>(false);
+
+  const loadOperadoresEVinculos = useCallback(async () => {
+    try {
+      const [ops, vincs] = await Promise.all([
+        toolShopService.getOperadores(),
+        toolShopService.getOperadorCentrosCusto(),
+      ]);
+      setOperadores(ops);
+      setVinculos(vincs);
+    } catch (err) {
+      console.error('Erro ao carregar operadores e vínculos:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOperadoresEVinculos();
+  }, [loadOperadoresEVinculos]);
+
+  // Mapa de operadores por centro de custo: centro_custo_id -> OperadorCentroCusto[]
+  const vinculosPorCentroMap = useMemo(() => {
+    const map = new Map<string, OperadorCentroCusto[]>();
+    vinculos.forEach((v) => {
+      if (!map.has(v.centro_custo_id)) {
+        map.set(v.centro_custo_id, []);
+      }
+      map.get(v.centro_custo_id)!.push(v);
+    });
+    return map;
+  }, [vinculos]);
+
+  const operadorMap = useMemo(() => {
+    return new Map(operadores.map((o) => [o.id, o]));
+  }, [operadores]);
+
+  // Handler para remover um operador de um posto
+  const handleRemoverOperadorDoPosto = async (operadorId: string) => {
+    if (!selectedPostoParaOperadores || !canEdit) return;
+    setIsUpdatingVinculos(true);
+    try {
+      await toolShopService.desvincularOperadorCentroCusto(
+        operadorId,
+        selectedPostoParaOperadores.id,
+        user?.nome || 'Usuário'
+      );
+      showFeedback('success', 'Operador desvinculado deste posto com sucesso.');
+      await loadOperadoresEVinculos();
+      onRefresh();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao desvincular operador.');
+    } finally {
+      setIsUpdatingVinculos(false);
+    }
+  };
+
+  // Handler para adicionar operador ao posto
+  const handleAdicionarOperadorAoPosto = async () => {
+    if (!selectedPostoParaOperadores || !operadorParaAdicionarId || !canEdit) return;
+    setIsUpdatingVinculos(true);
+    try {
+      await toolShopService.vincularOperadorCentroCusto(
+        operadorParaAdicionarId,
+        selectedPostoParaOperadores.id,
+        user?.nome || 'Usuário'
+      );
+      showFeedback('success', 'Operador vinculado ao posto com sucesso.');
+      setOperadorParaAdicionarId('');
+      await loadOperadoresEVinculos();
+      onRefresh();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao vincular operador.');
+    } finally {
+      setIsUpdatingVinculos(false);
+    }
+  };
+
   // Lista dinâmica de categorias para o filtro
+
   const categoriasDisponiveis = useMemo(() => {
     const set = new Set<string>();
     centrosCusto.forEach((c) => {
@@ -503,9 +594,20 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
                             </div>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-slate-400 italic">Chão de Fábrica Interno</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedPostoParaOperadores(centro)}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 hover:border-slate-300 transition-colors shadow-2xs"
+                              title="Gerenciar operadores deste posto de trabalho"
+                            >
+                              <Users className="h-3.5 w-3.5 text-slate-500" />
+                              <span>{(vinculosPorCentroMap.get(centro.id) || []).length} operador(es)</span>
+                            </button>
+                          </div>
                         )}
                       </td>
+
 
                       <td className="py-3.5 px-4 text-center">
                         <button
@@ -912,6 +1014,147 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
           isDeleting={isDeleting}
         />
       )}
+
+      {/* Modal: Operadores deste Posto de Trabalho */}
+      {selectedPostoParaOperadores && (
+        <Modal
+          isOpen={Boolean(selectedPostoParaOperadores)}
+          onClose={() => {
+            setSelectedPostoParaOperadores(null);
+            setOperadorParaAdicionarId('');
+          }}
+          title="Operadores deste Posto de Trabalho"
+          subtitle={`Gerencie os operadores autorizados no terminal de chão de fábrica para ${selectedPostoParaOperadores.nome}`}
+          maxWidth="lg"
+        >
+          <div className="space-y-5">
+            {/* Cabeçalho do Posto */}
+            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-amber-400">
+                  <Cpu className="h-5 w-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {selectedPostoParaOperadores.nome}
+                  </h4>
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <span>Categoria: <strong>{selectedPostoParaOperadores.categoria}</strong></span>
+                    <span>·</span>
+                    <span>Origem: <strong>Interno</strong></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Seção Adicionar Operador a este Posto (apenas gerente e admin) */}
+            {canEdit && (
+              <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                <label className="block text-xs font-bold text-slate-900">
+                  Vincular Operador a este Posto
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    value={operadorParaAdicionarId}
+                    onChange={(e) => setOperadorParaAdicionarId(e.target.value)}
+                    className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+                  >
+                    <option value="">Selecione um operador para vincular...</option>
+                    {operadores
+                      .filter((op) => {
+                        const postosVinculados =
+                          vinculosPorCentroMap.get(selectedPostoParaOperadores.id) || [];
+                        return !postosVinculados.some((v) => v.operador_id === op.id);
+                      })
+                      .map((op) => (
+                        <option key={op.id} value={op.id}>
+                          {op.nome}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!operadorParaAdicionarId || isUpdatingVinculos}
+                    onClick={handleAdicionarOperadorAoPosto}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <UserPlus className="h-4 w-4 text-amber-400" />
+                    <span>Vincular ao Posto</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Lista de Operadores Vinculados */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h5 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                  Operadores Deste Posto ({((vinculosPorCentroMap.get(selectedPostoParaOperadores.id) || []).length)})
+                </h5>
+              </div>
+
+              {((vinculosPorCentroMap.get(selectedPostoParaOperadores.id) || []).length === 0) ? (
+                <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500">
+                  Nenhum operador vinculado a este posto de trabalho.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white overflow-hidden shadow-2xs">
+                  {(vinculosPorCentroMap.get(selectedPostoParaOperadores.id) || []).map((v) => {
+                    const op = operadorMap.get(v.operador_id);
+                    return (
+                      <div
+                        key={v.id}
+                        className="flex items-center justify-between p-3.5 hover:bg-slate-50/70 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
+                            <Users className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">
+                              {op?.nome || 'Operador'}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {v.atualizado_por ? `Alterado por ${v.atualizado_por}` : 'Vínculo inicial'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {canEdit && (
+                          <button
+                            type="button"
+                            disabled={isUpdatingVinculos}
+                            onClick={() => handleRemoverOperadorDoPosto(v.operador_id)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-50"
+                            title="Desvincular operador deste posto"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            <span>Desvincular</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPostoParaOperadores(null);
+                  setOperadorParaAdicionarId('');
+                }}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
+

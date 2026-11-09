@@ -11,6 +11,8 @@ import {
   ModeloComponente,
   HistoricoImportacao,
   OrigemCentroCusto,
+  OperadorCentroCusto,
+  ConfiguracoesSistema,
 } from '../types';
 import {
   IBaseRepository,
@@ -25,6 +27,8 @@ import {
   IUsuarioRepository,
   IModeloComponenteRepository,
   IHistoricoImportacaoRepository,
+  IOperadorCentroCustoRepository,
+  IConfiguracoesRepository,
 } from './interfaces';
 import { generateUUID, DEFAULT_EMPRESA_ID } from '../utils/uuid';
 import {
@@ -38,6 +42,10 @@ import {
   SEED_APONTAMENTOS,
   SEED_MODELOS_COMPONENTES,
   SEED_HISTORICO_IMPORTACOES,
+  SEED_OPERADOR_CENTROS_CUSTO,
+  SEED_CONFIGURACOES,
+  isExampleId,
+  isExampleItem,
 } from '../data/seedData';
 import { runLegacyUserMigration } from '../auth/migration';
 
@@ -53,8 +61,11 @@ const STORAGE_KEYS = {
   USUARIOS: 'toolshop_usuarios_v1',
   MODELOS: 'toolshop_modelos_v1',
   HISTORICO_IMPORTACOES: 'toolshop_historico_importacoes_v1',
+  OPERADOR_CENTROS_CUSTO: 'toolshop_operador_centros_custo_v1',
+  CONFIGURACOES: 'toolshop_configuracoes_v1',
   INITIALIZED: 'toolshop_initialized_v1',
 };
+
 
 class LocalStorageBaseRepository<T extends { id: string; empresa_id: string }>
   implements IBaseRepository<T>
@@ -82,12 +93,17 @@ class LocalStorageBaseRepository<T extends { id: string; empresa_id: string }>
 
   async getAll(empresaId: string = DEFAULT_EMPRESA_ID): Promise<T[]> {
     const items = this.getRawItems();
-    return items.filter((item) => !empresaId || item.empresa_id === empresaId);
+    return items.filter(
+      (item) => (!empresaId || item.empresa_id === empresaId) && !isExampleItem(item)
+    );
   }
 
   async getById(id: string): Promise<T | null> {
+    if (isExampleId(id)) return null;
     const items = this.getRawItems();
-    return items.find((item) => item.id === id) || null;
+    const found = items.find((item) => item.id === id);
+    if (!found || isExampleItem(found)) return null;
+    return found;
   }
 
   async create(
@@ -457,6 +473,85 @@ export class LocalStorageHistoricoImportacaoRepository
   }
 }
 
+export class LocalStorageOperadorCentroCustoRepository
+  extends LocalStorageBaseRepository<OperadorCentroCusto>
+  implements IOperadorCentroCustoRepository
+{
+  constructor() {
+    super(STORAGE_KEYS.OPERADOR_CENTROS_CUSTO, SEED_OPERADOR_CENTROS_CUSTO);
+  }
+
+  async getByOperadorId(
+    operadorId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<OperadorCentroCusto[]> {
+    const all = await this.getAll(empresaId);
+    return all.filter((item) => item.operador_id === operadorId);
+  }
+
+  async getByCentroCustoId(
+    centroCustoId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<OperadorCentroCusto[]> {
+    const all = await this.getAll(empresaId);
+    return all.filter((item) => item.centro_custo_id === centroCustoId);
+  }
+
+  async deleteByOperadorECentroCusto(
+    operadorId: string,
+    centroCustoId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<boolean> {
+    const items = this.getRawItems();
+    const filtered = items.filter(
+      (item) =>
+        !(
+          item.operador_id === operadorId &&
+          item.centro_custo_id === centroCustoId &&
+          (!empresaId || item.empresa_id === empresaId)
+        )
+    );
+    if (filtered.length !== items.length) {
+      this.setRawItems(filtered);
+      return true;
+    }
+    return false;
+  }
+}
+
+export class LocalStorageConfiguracoesRepository
+  extends LocalStorageBaseRepository<ConfiguracoesSistema>
+  implements IConfiguracoesRepository
+{
+  constructor() {
+    super(STORAGE_KEYS.CONFIGURACOES, [SEED_CONFIGURACOES]);
+  }
+
+  async getConfig(empresaId: string = DEFAULT_EMPRESA_ID): Promise<ConfiguracoesSistema> {
+    const all = await this.getAll(empresaId);
+    if (all.length > 0) {
+      return all[0];
+    }
+    // Cria padrão se não existir
+    const defaultCfg: ConfiguracoesSistema = {
+      ...SEED_CONFIGURACOES,
+      empresa_id: empresaId,
+    };
+    await this.create(defaultCfg);
+    return defaultCfg;
+  }
+
+  async updateConfig(
+    updates: Partial<ConfiguracoesSistema>,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<ConfiguracoesSistema> {
+    const current = await this.getConfig(empresaId);
+    const updated = await this.update(current.id, updates);
+    return updated;
+  }
+}
+
+
 /**
  * Migração única e idempotente de Máquinas para Centros de Custo
  */
@@ -501,41 +596,32 @@ export function runCentroCustoMigration(): void {
       }
     }
 
-    if (centros.length === 0) {
-      centros = [...SEED_CENTROS_CUSTO];
-    } else {
-      // Garante que os 3 terceirizados de exemplo do seed existam se não houver terceirizados
-      for (const seedTerceirizado of SEED_CENTROS_CUSTO.filter((c) => c.origem === 'terceirizado')) {
-        if (!centros.some((c) => c.id === seedTerceirizado.id)) {
-          centros.push(seedTerceirizado);
-        }
-      }
-    }
-
-    // Normaliza todos os centros de custo
-    centros = centros.map((c: any) => {
-      const val = Number(c.valor_unitario ?? c.custo_hora ?? 0);
-      const cat = c.categoria || c.tipo || 'Outro';
-      return {
-        ...c,
-        categoria: cat,
-        tipo: cat,
-        valor_unitario: val,
-        custo_hora: val,
-        origem: c.origem || 'interno',
-        modelo_custo: c.origem === 'terceirizado' ? (c.modelo_custo || 'hora') : 'hora',
-        ativo: c.ativo !== false,
-      };
-    });
+    // Filtra e normaliza todos os centros de custo (removendo qualquer registro de exemplo)
+    centros = centros
+      .filter((c: any) => !isExampleId(c.id))
+      .map((c: any) => {
+        const val = Number(c.valor_unitario ?? c.custo_hora ?? 0);
+        const cat = c.categoria || c.tipo || 'Outro';
+        return {
+          ...c,
+          categoria: cat,
+          tipo: cat,
+          valor_unitario: val,
+          custo_hora: val,
+          origem: c.origem || 'interno',
+          modelo_custo: c.origem === 'terceirizado' ? (c.modelo_custo || 'hora') : 'hora',
+          ativo: c.ativo !== false,
+        };
+      });
 
     localStorage.setItem(STORAGE_KEYS.CENTROS_CUSTO, JSON.stringify(centros));
     localStorage.setItem(STORAGE_KEYS.MAQUINAS, JSON.stringify(centros));
 
-    // Migração de Operações: sincroniza centro_custo_id <-> maquina_id
+    // Migração de Operações: sincroniza centro_custo_id <-> maquina_id e remove exemplos
     const rawOps = localStorage.getItem(STORAGE_KEYS.OPERACOES);
     if (rawOps) {
       try {
-        const ops = JSON.parse(rawOps) as any[];
+        const ops = (JSON.parse(rawOps) as any[]).filter((op: any) => !isExampleId(op.id));
         let opsChanged = false;
         for (const op of ops) {
           if (!op.centro_custo_id && op.maquina_id) {
@@ -546,19 +632,17 @@ export function runCentroCustoMigration(): void {
             opsChanged = true;
           }
         }
-        if (opsChanged) {
-          localStorage.setItem(STORAGE_KEYS.OPERACOES, JSON.stringify(ops));
-        }
+        localStorage.setItem(STORAGE_KEYS.OPERACOES, JSON.stringify(ops));
       } catch (err) {
         console.error('Erro ao migrar operações para centro_custo_id:', err);
       }
     }
 
-    // Migração de Modelos: sincroniza categoria <-> tipo_maquina
+    // Migração de Modelos: sincroniza categoria <-> tipo_maquina e remove exemplos
     const rawModelos = localStorage.getItem(STORAGE_KEYS.MODELOS);
     if (rawModelos) {
       try {
-        const modelos = JSON.parse(rawModelos) as any[];
+        const modelos = (JSON.parse(rawModelos) as any[]).filter((mod: any) => !isExampleId(mod.id));
         let modChanged = false;
         for (const mod of modelos) {
           if (Array.isArray(mod.operacoes)) {
@@ -577,9 +661,7 @@ export function runCentroCustoMigration(): void {
             }
           }
         }
-        if (modChanged) {
-          localStorage.setItem(STORAGE_KEYS.MODELOS, JSON.stringify(modelos));
-        }
+        localStorage.setItem(STORAGE_KEYS.MODELOS, JSON.stringify(modelos));
       } catch (err) {
         console.error('Erro ao migrar modelos para categoria:', err);
       }
@@ -590,44 +672,107 @@ export function runCentroCustoMigration(): void {
 }
 
 /**
- * Função para inicializar e restaurar os dados de demonstração (seed)
+ * Função para purgar completamente todos os dados de exemplo do localStorage
+ */
+export function purgeAllExampleData(): void {
+  try {
+    const keysToClean = [
+      STORAGE_KEYS.CLIENTES,
+      STORAGE_KEYS.CENTROS_CUSTO,
+      STORAGE_KEYS.MAQUINAS,
+      STORAGE_KEYS.OPERADORES,
+      STORAGE_KEYS.PROJETOS,
+      STORAGE_KEYS.COMPONENTES,
+      STORAGE_KEYS.OPERACOES,
+      STORAGE_KEYS.APONTAMENTOS,
+      STORAGE_KEYS.MODELOS,
+      STORAGE_KEYS.HISTORICO_IMPORTACOES,
+      STORAGE_KEYS.OPERADOR_CENTROS_CUSTO,
+      // Chaves legadas sem sufixo de versão
+      'toolshop_clientes',
+      'toolshop_centros_custo',
+      'toolshop_maquinas',
+      'toolshop_operadores',
+      'toolshop_projetos',
+      'toolshop_componentes',
+      'toolshop_operacoes',
+      'toolshop_apontamentos',
+      'toolshop_modelos',
+      'toolshop_historico_importacoes',
+      'toolshop_operador_centros_custo',
+    ];
+
+    for (const key of keysToClean) {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        try {
+          const items = JSON.parse(raw);
+          if (Array.isArray(items)) {
+            const cleaned = items.filter((item: any) => !isExampleItem(item));
+            localStorage.setItem(key, JSON.stringify(cleaned));
+          } else {
+            localStorage.setItem(key, JSON.stringify([]));
+          }
+        } catch {
+          localStorage.setItem(key, JSON.stringify([]));
+        }
+      } else {
+        localStorage.setItem(key, JSON.stringify([]));
+      }
+    }
+
+    // Varre e purga qualquer outra chave do localStorage que pertença a coleções
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (
+          k &&
+          k.startsWith('toolshop_') &&
+          !k.includes('usuario') &&
+          !k.includes('auth_session') &&
+          !k.includes('configuraco') &&
+          !k.includes('initialized')
+        ) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            try {
+              const val = JSON.parse(raw);
+              if (Array.isArray(val)) {
+                const cleaned = val.filter((item: any) => !isExampleItem(item));
+                localStorage.setItem(k, JSON.stringify(cleaned));
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Configurações: mantém ou inicializa padrão
+    const rawConfig = localStorage.getItem(STORAGE_KEYS.CONFIGURACOES);
+    if (!rawConfig) {
+      localStorage.setItem(STORAGE_KEYS.CONFIGURACOES, JSON.stringify([SEED_CONFIGURACOES]));
+    }
+
+    localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
+  } catch (err) {
+    console.error('Erro ao purgar dados de exemplo locais:', err);
+  }
+}
+
+/**
+ * Inicialização do sistema limpo (sem registros de demonstração)
  */
 export function initializeSeedData(forceReset: boolean = false): void {
-  // Executa migração única para purgar exclusivamente os usuários legados do seed
+  // Executa migração de segurança para purgar usuários legados do seed
   runLegacyUserMigration();
   // Executa migração de máquinas para centros de custo
   runCentroCustoMigration();
-
-  const isInitialized = localStorage.getItem(STORAGE_KEYS.INITIALIZED);
-  const hasCentros = localStorage.getItem(STORAGE_KEYS.CENTROS_CUSTO);
-  const hasModelos = localStorage.getItem(STORAGE_KEYS.MODELOS);
-  const hasHistorico = localStorage.getItem(STORAGE_KEYS.HISTORICO_IMPORTACOES);
-
-  if (!isInitialized || forceReset) {
-    localStorage.setItem(STORAGE_KEYS.CLIENTES, JSON.stringify(SEED_CLIENTES));
-    localStorage.setItem(STORAGE_KEYS.CENTROS_CUSTO, JSON.stringify(SEED_CENTROS_CUSTO));
-    localStorage.setItem(STORAGE_KEYS.MAQUINAS, JSON.stringify(SEED_CENTROS_CUSTO));
-    localStorage.setItem(STORAGE_KEYS.OPERADORES, JSON.stringify(SEED_OPERADORES));
-    localStorage.setItem(STORAGE_KEYS.PROJETOS, JSON.stringify(SEED_PROJETOS));
-    localStorage.setItem(STORAGE_KEYS.COMPONENTES, JSON.stringify(SEED_COMPONENTES));
-    localStorage.setItem(STORAGE_KEYS.OPERACOES, JSON.stringify(SEED_OPERACOES));
-    localStorage.setItem(STORAGE_KEYS.APONTAMENTOS, JSON.stringify(SEED_APONTAMENTOS));
-    localStorage.setItem(STORAGE_KEYS.MODELOS, JSON.stringify(SEED_MODELOS_COMPONENTES));
-    localStorage.setItem(STORAGE_KEYS.HISTORICO_IMPORTACOES, JSON.stringify(SEED_HISTORICO_IMPORTACOES));
-    localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
-    // NOTA DE SEGURANÇA: STORAGE_KEYS.USUARIOS nunca é populado com seed automático.
-  } else {
-    if (!hasCentros) {
-      localStorage.setItem(STORAGE_KEYS.CENTROS_CUSTO, JSON.stringify(SEED_CENTROS_CUSTO));
-      localStorage.setItem(STORAGE_KEYS.MAQUINAS, JSON.stringify(SEED_CENTROS_CUSTO));
-    }
-    if (!hasModelos) {
-      localStorage.setItem(STORAGE_KEYS.MODELOS, JSON.stringify(SEED_MODELOS_COMPONENTES));
-    }
-    if (!hasHistorico) {
-      localStorage.setItem(STORAGE_KEYS.HISTORICO_IMPORTACOES, JSON.stringify(SEED_HISTORICO_IMPORTACOES));
-    }
-  }
+  // Purga integral de todos os dados de demonstração
+  purgeAllExampleData();
 }
 
 // Instâncias Singleton dos Repositórios para uso em Serviços
@@ -643,5 +788,8 @@ export const apontamentoRepository = new LocalStorageApontamentoRepository();
 export const usuarioRepository = new LocalStorageUsuarioRepository();
 export const modeloComponenteRepository = new LocalStorageModeloComponenteRepository();
 export const historicoImportacaoRepository = new LocalStorageHistoricoImportacaoRepository();
+export const operadorCentroCustoRepository = new LocalStorageOperadorCentroCustoRepository();
+export const configuracoesRepository = new LocalStorageConfiguracoesRepository();
+
 
 

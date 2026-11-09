@@ -18,6 +18,8 @@ import {
   Briefcase,
   Crown,
   Shield,
+  Sliders,
+  Trash2,
 } from 'lucide-react';
 import { DEFAULT_EMPRESA_ID } from '../../utils/uuid';
 import { useAuth } from '../../auth/AuthContext';
@@ -88,7 +90,14 @@ const ALL_NAV_ITEMS: NavItem[] = [
     icon: ShieldCheck,
     description: 'Controle de acesso e senhas',
   },
+  {
+    id: 'configuracoes',
+    label: 'Configurações',
+    icon: Sliders,
+    description: 'Regras e postos de trabalho',
+  },
 ];
+
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentTab,
@@ -250,18 +259,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         )}
 
-        {/* Rodapé da Barra Lateral - Restaurar Seed Data */}
-        <div className="border-t border-slate-200 p-3">
-          <button
-            type="button"
-            onClick={onResetSeed}
-            disabled={isResetting}
-            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 disabled:opacity-50"
-          >
-            <RotateCcw className={`h-3 w-3 ${isResetting ? 'animate-spin' : ''}`} />
-            <span>Restaurar Dados (Seed)</span>
-          </button>
-        </div>
+        {/* Rodapé da Barra Lateral - Limpar Dados de Exemplo */}
+        {(perfil === 'admin' || perfil === 'gerente') && (
+          <div className="border-t border-slate-200 p-3">
+            <button
+              type="button"
+              onClick={onResetSeed}
+              disabled={isResetting}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-2xs hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:opacity-50"
+              title="Apagar dados de exemplo e manter base limpa"
+            >
+              <Trash2 className={`h-3.5 w-3.5 ${isResetting ? 'animate-spin' : ''}`} />
+              <span>Limpar Dados de Exemplo</span>
+            </button>
+          </div>
+        )}
       </aside>
     </>
   );

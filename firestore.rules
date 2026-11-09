@@ -206,5 +206,36 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(historicoId) && isValidHistorico(incoming()) && incoming().id == existing().id;
       allow delete: if isSystemAdmin() && isValidId(historicoId);
     }
+
+    // --- 11. VÍNCULOS OPERADOR - CENTROS DE CUSTO ---
+    function isValidOperadorCentroCusto(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.operador_id is string && data.operador_id.size() <= 128 &&
+             data.centro_custo_id is string && data.centro_custo_id.size() <= 128;
+    }
+
+    match /operador_centros_custo/{vinculoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(vinculoId) && isValidOperadorCentroCusto(incoming());
+      allow update: if isSignedIn() && isValidId(vinculoId) && isValidOperadorCentroCusto(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(vinculoId);
+    }
+
+    // --- 12. CONFIGURAÇÕES DO SISTEMA ---
+    function isValidConfiguracoes(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.restringir_postos is bool &&
+             data.liberar_apenas_proxima_operacao is bool;
+    }
+
+    match /configuracoes/{configId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(configId) && isValidConfiguracoes(incoming());
+      allow update: if isSignedIn() && isValidId(configId) && isValidConfiguracoes(incoming());
+      allow delete: if isSystemAdmin() && isValidId(configId);
+    }
   }
 }
+

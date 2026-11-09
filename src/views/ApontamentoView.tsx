@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ApontamentoComOperador,
   Operador,
   Maquina,
+  CentroCusto,
   OperacaoComDetalhes,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
@@ -10,6 +11,7 @@ import { Modal } from '../components/common/Modal';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
 import { EmptyState } from '../components/common/EmptyState';
 import { useAuth } from '../auth/AuthContext';
+import { isExampleItem } from '../data/seedData';
 import {
   Play,
   Square,
@@ -18,6 +20,7 @@ import {
   Cpu,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Calendar,
   Layers,
   Edit2,
@@ -27,6 +30,8 @@ import {
   ShieldAlert,
   ArrowRight,
   Info,
+  CalendarDays,
+  Hash,
 } from 'lucide-react';
 import { formatDateTimeBR, formatHours } from '../utils/formatters';
 
@@ -53,13 +58,27 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
 }) => {
   const { user, perfil, can } = useAuth();
 
+  // Sanitiza as propriedades recebidas para nunca incluir resquícios de exemplos ou seeds
+  const validOperadores = useMemo(
+    () => (operadores || []).filter((o) => !isExampleItem(o)),
+    [operadores]
+  );
+  const validMaquinas = useMemo(
+    () => (maquinas || []).filter((m) => !isExampleItem(m)),
+    [maquinas]
+  );
+  const validApontamentos = useMemo(
+    () => (apontamentos || []).filter((a) => !isExampleItem(a)),
+    [apontamentos]
+  );
+
   // Se o usuário logado for operador e tiver operador_id associado, fixa nele
   const initialOpId = useMemo(() => {
     if (perfil === 'operador' && user?.operador_id) {
       return user.operador_id;
     }
-    return operadores[0]?.id || '';
-  }, [perfil, user, operadores]);
+    return validOperadores[0]?.id || '';
+  }, [perfil, user, validOperadores]);
 
   // Operador ativo no tablet
   const [selectedOperadorId, setSelectedOperadorId] = useState<string>(initialOpId);
@@ -70,14 +89,63 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     }
   }, [perfil, user]);
 
+  // Purga imediata de resquícios de exemplos ao montar a aba de Apontamentos
+  useEffect(() => {
+    toolShopService.apagarDadosDeExemplo().catch(console.warn);
+  }, []);
+
   // Operadores visíveis na seleção (operador só vê a si mesmo no tablet; líderes e gerência veem todos)
   const visibleOperadores = useMemo(() => {
     if (perfil === 'operador' && user?.operador_id) {
-      const match = operadores.filter((op) => op.id === user.operador_id);
+      const match = validOperadores.filter((op) => op.id === user.operador_id);
       if (match.length > 0) return match;
     }
-    return operadores;
-  }, [operadores, perfil, user]);
+    return validOperadores;
+  }, [validOperadores, perfil, user]);
+
+  // Operador atualmente selecionado
+  const selectedOperador = useMemo(() => {
+    return (
+      validOperadores.find((o) => o.id === selectedOperadorId) ||
+      (perfil === 'operador' && user?.operador_id
+        ? validOperadores.find((o) => o.id === user.operador_id)
+        : null) ||
+      validOperadores[0] ||
+      null
+    );
+  }, [validOperadores, selectedOperadorId, perfil, user]);
+
+  // Postos de trabalho vinculados ao operador selecionado
+  const [operatorWorkstationIds, setOperatorWorkstationIds] = useState<string[]>([]);
+  const [isLoadingWorkstations, setIsLoadingWorkstations] = useState(false);
+
+  const loadOperatorWorkstations = useCallback(async (opId: string) => {
+    if (!opId) {
+      setOperatorWorkstationIds([]);
+      return;
+    }
+    setIsLoadingWorkstations(true);
+    try {
+      const postos = await toolShopService.getCentrosCustoDoOperador(opId);
+      setOperatorWorkstationIds(postos);
+    } catch (err) {
+      console.error('Erro ao buscar postos do operador:', err);
+    } finally {
+      setIsLoadingWorkstations(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedOperador?.id) {
+      loadOperatorWorkstations(selectedOperador.id);
+    }
+  }, [selectedOperador?.id, loadOperatorWorkstations]);
+
+  // Lista enriquecida de Centros de Custo que são postos vinculados
+  const operatorWorkstations = useMemo(() => {
+    const postosSet = new Set(operatorWorkstationIds);
+    return validMaquinas.filter((m) => postosSet.has(m.id) && m.origem === 'interno');
+  }, [validMaquinas, operatorWorkstationIds]);
 
   // Lista de operações disponíveis carregadas
   const [operacoesDisponiveis, setOperacoesDisponiveis] = useState<OperacaoComDetalhes[]>([]);
@@ -115,19 +183,16 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     motivo: '',
   });
 
-  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
+    null
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Operador atualmente selecionado
-  const selectedOperador = useMemo(() => {
-    return operadores.find((o) => o.id === selectedOperadorId) || operadores[0] || null;
-  }, [operadores, selectedOperadorId]);
-
-  // Apontamento ativo do operador selecionado (se houver)
+  // Apontamento ativo do operador selecionado (se houver) - permanece visível e finalizável mesmo se o posto for desvinculado
   const activeApontamento = useMemo(() => {
     if (!selectedOperador) return null;
-    return apontamentos.find((a) => a.operador_id === selectedOperador.id && !a.fim) || null;
-  }, [apontamentos, selectedOperador]);
+    return validApontamentos.find((a) => a.operador_id === selectedOperador.id && !a.fim) || null;
+  }, [validApontamentos, selectedOperador]);
 
   // Atualiza cronômetro em tempo real a cada 1 segundo se houver apontamento ativo
   useEffect(() => {
@@ -148,22 +213,24 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     return () => clearInterval(interval);
   }, [activeApontamento]);
 
-  // Carrega operações disponíveis (Pendente ou Em andamento)
-  const loadOperacoesDisponiveis = async () => {
+  // Carrega operações disponíveis respeitando regras de postos e perfil no serviço
+  const loadOperacoesDisponiveis = useCallback(async () => {
     setIsLoadingOps(true);
     try {
-      const ops = await toolShopService.getOperacoesDisponiveis();
-      setOperacoesDisponiveis(ops);
+      const targetOpId =
+        perfil === 'operador' && user?.operador_id ? user.operador_id : selectedOperador?.id;
+      const ops = await toolShopService.getOperacoesDisponiveis(undefined, user, targetOpId);
+      setOperacoesDisponiveis(ops.filter((o) => !isExampleItem(o)));
     } catch (err) {
       console.error('Erro ao carregar operações disponíveis:', err);
     } finally {
       setIsLoadingOps(false);
     }
-  };
+  }, [user, selectedOperador?.id, perfil]);
 
   useEffect(() => {
     loadOperacoesDisponiveis();
-  }, [apontamentos]);
+  }, [validApontamentos, selectedOperador?.id, loadOperacoesDisponiveis]);
 
   // Histórico de apontamentos do dia do operador selecionado
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
@@ -171,37 +238,77 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
 
   const historicoOperador = useMemo(() => {
     if (!selectedOperador) return [];
-    return apontamentos.filter((a) => {
+    return validApontamentos.filter((a) => {
       if (a.operador_id !== selectedOperador.id) return false;
       if (!mostrarApenasHoje) return true;
       const aptDate = a.inicio.split('T')[0];
       return aptDate === todayStr;
     });
-  }, [apontamentos, selectedOperador, mostrarApenasHoje, todayStr]);
+  }, [validApontamentos, selectedOperador, mostrarApenasHoje, todayStr]);
 
-  // Filtragem de operações disponíveis
+  // Filtragem e Ordenação de operações disponíveis:
+  // 1º critério de ordenação: Prazo do projeto (mais próximo primeiro)
+  // 2º critério de ordenação: Sequência da operação (sequencia crescente)
   const filteredOperacoes = useMemo(() => {
-    return operacoesDisponiveis.filter((op) => {
-      const matchesSearch =
-        op.descricao.toLowerCase().includes(searchOp.toLowerCase()) ||
-        (op.componente?.nome && op.componente.nome.toLowerCase().includes(searchOp.toLowerCase())) ||
-        (op.projeto?.codigo && op.projeto.codigo.toLowerCase().includes(searchOp.toLowerCase()));
+    return operacoesDisponiveis
+      .filter((op) => {
+        const matchesSearch =
+          !searchOp.trim() ||
+          op.descricao.toLowerCase().includes(searchOp.toLowerCase()) ||
+          (op.componente?.nome &&
+            op.componente.nome.toLowerCase().includes(searchOp.toLowerCase())) ||
+          (op.projeto?.codigo &&
+            op.projeto.codigo.toLowerCase().includes(searchOp.toLowerCase()));
 
-      const matchesMaquina =
-        maquinaFilter === 'Todas' ||
-        op.centro_custo_id === maquinaFilter ||
-        op.maquina_id === maquinaFilter;
+        if (!matchesSearch) return false;
 
-      return matchesSearch && matchesMaquina;
+        // Filtro de centro de custo para líder, gerente e admin
+        if (perfil !== 'operador') {
+          if (maquinaFilter === 'Todas') return true;
+          if (maquinaFilter === 'sem_centro') {
+            return !op.centro_custo_id && !op.maquina_id;
+          }
+          return op.centro_custo_id === maquinaFilter || op.maquina_id === maquinaFilter;
+        }
+
+        return true;
+      })
+      .sort((a, b) => {
+        // Ordena por prazo do projeto primeiro (mais próximo / urgente primeiro)
+        const prazoA = a.projeto?.prazo || '9999-12-31';
+        const prazoB = b.projeto?.prazo || '9999-12-31';
+        const diffPrazo = prazoA.localeCompare(prazoB);
+        if (diffPrazo !== 0) return diffPrazo;
+
+        // Em seguida pela sequência da operação
+        return (a.sequencia || 0) - (b.sequencia || 0);
+      });
+  }, [operacoesDisponiveis, searchOp, maquinaFilter, perfil]);
+
+  // Agrupamento por posto quando o perfil for operador e houver mais de um posto vinculado
+  const operacoesAgrupadasPorPosto = useMemo(() => {
+    if (perfil !== 'operador' || operatorWorkstations.length <= 1) {
+      return null;
+    }
+
+    const groups: { centro: CentroCusto; operacoes: OperacaoComDetalhes[] }[] = [];
+
+    operatorWorkstations.forEach((centro) => {
+      const ops = filteredOperacoes.filter(
+        (o) => (o.centro_custo_id || o.maquina_id) === centro.id
+      );
+      groups.push({ centro, operacoes: ops });
     });
-  }, [operacoesDisponiveis, searchOp, maquinaFilter]);
+
+    return groups;
+  }, [perfil, operatorWorkstations, filteredOperacoes]);
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
     setFeedback({ type, message });
     setTimeout(() => setFeedback(null), 4500);
   };
 
-  // --- INICIAR APONTAMENTO ---
+  // --- INICIAR APONTAMENTO (COM VERIFICAÇÃO DE VÍNCULO NO SERVIÇO) ---
   const handleIniciarApontamento = async (operacao: OperacaoComDetalhes) => {
     if (!selectedOperador) {
       showFeedback('error', 'Selecione um operador antes de iniciar.');
@@ -210,7 +317,7 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
 
     setIsSubmitting(true);
     try {
-      await toolShopService.iniciarApontamento(operacao.id, selectedOperador.id);
+      await toolShopService.iniciarApontamento(operacao.id, selectedOperador.id, user);
       showFeedback(
         'success',
         `Apontamento iniciado para ${selectedOperador.nome} na operação "${operacao.descricao}"!`
@@ -259,9 +366,7 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
 
   // --- AJUSTE MANUAL ---
   const handleOpenAjusteModal = (apt: ApontamentoComOperador) => {
-    // Formata ISO para o formato aceito por input datetime-local: YYYY-MM-DDTHH:mm
-    const toInputVal = (isoStr: string | null) => {
-      if (!isoStr) return '';
+    const toLocalDatetime = (isoStr: string) => {
       const d = new Date(isoStr);
       const pad = (n: number) => String(n).padStart(2, '0');
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
@@ -272,14 +377,14 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     setAjusteModal({
       isOpen: true,
       apontamento: apt,
-      inicioStr: toInputVal(apt.inicio),
-      fimStr: toInputVal(apt.fim),
+      inicioStr: toLocalDatetime(apt.inicio),
+      fimStr: apt.fim ? toLocalDatetime(apt.fim) : '',
       motivo: apt.motivo_edicao || '',
       error: undefined,
     });
   };
 
-  const handleConfirmAjuste = async () => {
+  const handleSaveAjuste = async () => {
     if (!ajusteModal.apontamento) return;
 
     if (!ajusteModal.inicioStr) {
@@ -290,7 +395,7 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     if (!ajusteModal.motivo.trim()) {
       setAjusteModal((prev) => ({
         ...prev,
-        error: 'Informe o motivo do ajuste manual (ex: esquecimento de bater ponto).',
+        error: 'A justificativa do ajuste manual é obrigatória para fins de auditoria.',
       }));
       return;
     }
@@ -330,80 +435,231 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     }
   };
 
+  // Componente que renderiza um card de operação elegível
+  const renderOperationCard = (op: OperacaoComDetalhes) => (
+    <div
+      key={op.id}
+      className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-2xs transition-all hover:border-slate-300 md:flex-row md:items-center md:justify-between"
+    >
+      <div className="space-y-1.5 min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Código do Projeto */}
+          <span className="font-mono text-xs font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+            {op.projeto?.codigo || 'PROJETO'}
+          </span>
+
+          {/* Prazo do Projeto */}
+          {op.projeto?.prazo && (
+            <span className="inline-flex items-center gap-1 rounded bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+              <CalendarDays className="h-3 w-3 text-amber-600" />
+              <span>Prazo: {op.projeto.prazo}</span>
+            </span>
+          )}
+
+          {/* Peça / Componente */}
+          <span className="text-xs font-semibold text-slate-700">
+            Peça: <strong>{op.componente?.nome}</strong>
+          </span>
+
+          {/* Quantidade */}
+          <span className="rounded bg-slate-100 text-slate-800 border border-slate-200 px-1.5 py-0.5 font-mono text-[10px] font-bold">
+            Qtd: {op.componente?.quantidade || 1} un
+          </span>
+
+          {/* Material */}
+          {op.componente?.material && (
+            <span className="rounded bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 border border-slate-100">
+              {op.componente.material}
+            </span>
+          )}
+
+          {/* Status */}
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              op.status === 'Em andamento'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                : 'bg-slate-100 text-slate-700 border border-slate-200'
+            }`}
+          >
+            {op.status}
+          </span>
+        </div>
+
+        {/* Descrição e Sequência */}
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-0.5 font-mono text-xs font-bold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+            <Hash className="h-3 w-3 text-slate-400" />
+            <span>{op.sequencia}</span>
+          </span>
+          <h4 className="text-sm font-bold text-slate-900 truncate">{op.descricao}</h4>
+        </div>
+
+        {/* Centro de Custo e Horas */}
+        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 pt-0.5">
+          <div className="flex items-center gap-1.5">
+            <Cpu className="h-3.5 w-3.5 text-slate-400" />
+            <span className="font-medium text-slate-700">
+              {(op.centro_custo || op.maquina)?.nome || (
+                <span className="text-amber-700 font-semibold italic">Sem centro de custo</span>
+              )}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5 font-mono">
+            <Clock className="h-3.5 w-3.5 text-slate-400" />
+            <span>Estimadas: {formatHours(op.horas_estimadas)}</span>
+            <span>· Apontadas: {formatHours(op.horasApontadas)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Botão Grande de Iniciar Apontamento */}
+      <button
+        type="button"
+        onClick={() => handleIniciarApontamento(op)}
+        disabled={isSubmitting}
+        className="flex min-h-[50px] shrink-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white shadow-xs transition-transform hover:bg-slate-800 active:scale-98 md:w-auto"
+      >
+        <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
+        <span>Iniciar Apontamento</span>
+      </button>
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       {/* Alerta de Feedback Padronizado */}
       <FeedbackAlert feedback={feedback} onClose={() => setFeedback(null)} />
 
-      {/* ========================================================================= */}
-      {/* ETAPA 1: ESCOLHA DO OPERADOR (BOTÕES GRANDES PARA TABLET)                */}
-      {/* ========================================================================= */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between mb-3">
-          <div>
-            <span className="text-xs font-bold tracking-wider text-slate-500 uppercase">
-              Chão de Fábrica · Tablet Operacional
-            </span>
-            <h2 className="text-base font-bold text-slate-900 sm:text-lg">
-              Quem está operando esta estação?
-            </h2>
-          </div>
-          <span className="text-xs text-slate-500">
-            Toque no seu nome para carregar suas tarefas e apontamento
-          </span>
-        </div>
 
-        {/* Grade de Operadores com Alvos de Toque Amplos */}
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          {visibleOperadores.map((op) => {
-            const isSelected = selectedOperador?.id === op.id;
-            const hasShift = apontamentos.some((a) => a.operador_id === op.id && !a.fim);
+      {/* ========================================================================= */}
+      {/* SEÇÃO 1: CABEÇALHO DO OPERADOR OU SELETOR DE EQUIPE                      */}
+      {/* ========================================================================= */}
+      {perfil === 'operador' ? (
+        /* Topo Focado para Operador: Nome e Postos Vinculados */
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-amber-400 shadow-xs">
+                <User className="h-6 w-6" />
+              </div>
+              <div>
+                <span className="block text-[11px] font-bold tracking-wider text-slate-400 uppercase">
+                  Terminal de Chão de Fábrica · Operador Conectado
+                </span>
+                <h2 className="text-lg font-extrabold tracking-tight text-slate-900 sm:text-xl">
+                  {selectedOperador?.nome || user?.nome}
+                </h2>
+              </div>
+            </div>
 
-            return (
-              <button
-                key={op.id}
-                type="button"
-                onClick={() => setSelectedOperadorId(op.id)}
-                className={`relative flex min-h-[58px] items-center gap-3 rounded-xl p-3 text-left transition-all ${
-                  isSelected
-                    ? 'bg-slate-900 text-white shadow-md ring-2 ring-amber-400'
-                    : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-              >
-                <div
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-                    isSelected ? 'bg-slate-800 text-amber-400' : 'bg-white text-slate-600 shadow-2xs'
-                  }`}
-                >
-                  <User className="h-5 w-5" />
+            {/* Postos de Trabalho Vinculados */}
+            <div className="flex flex-col items-start sm:items-end gap-1.5">
+              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Seus Postos de Trabalho:
+              </span>
+              {operatorWorkstations.length === 0 ? (
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-900">
+                  <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
+                  <span>Nenhum posto vinculado</span>
+                </span>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {operatorWorkstations.map((cc) => (
+                    <span
+                      key={cc.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 shadow-2xs"
+                    >
+                      <Cpu className="h-3.5 w-3.5 text-slate-500" />
+                      <span>{cc.nome}</span>
+                    </span>
+                  ))}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-bold sm:text-sm">{op.nome}</div>
-                  <div
-                    className={`truncate text-[11px] font-medium ${
-                      hasShift
-                        ? isSelected
-                          ? 'text-amber-300'
-                          : 'text-emerald-700 font-semibold'
-                        : isSelected
-                        ? 'text-slate-400'
-                        : 'text-slate-500'
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Topo para Líder, Gerente e Admin: Escolha do Operador para Apontamento */
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between mb-3">
+            <div>
+              <span className="text-xs font-bold tracking-wider text-slate-500 uppercase">
+                Chão de Fábrica · Gestão de Apontamentos
+              </span>
+              <h2 className="text-base font-bold text-slate-900 sm:text-lg">
+                Apontar em nome de qual operador?
+              </h2>
+            </div>
+            <span className="text-xs text-slate-500">
+              Selecione o operador para iniciar ou finalizar o turno
+            </span>
+          </div>
+
+          {/* Grade de Operadores com Alvos de Toque Amplos */}
+          {visibleOperadores.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500">
+              <User className="mx-auto h-8 w-8 text-slate-400 mb-2" />
+              <p className="font-semibold text-slate-700">Nenhum operador cadastrado no sistema</p>
+              <p className="mt-1 text-slate-500">
+                Cadastre operadores na aba "Operadores" para iniciar ou registrar apontamentos no chão de fábrica.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+              {visibleOperadores.map((op) => {
+                const isSelected = selectedOperador?.id === op.id;
+                const hasShift = validApontamentos.some((a) => a.operador_id === op.id && !a.fim);
+
+                return (
+                  <button
+                    key={op.id}
+                    type="button"
+                    onClick={() => setSelectedOperadorId(op.id)}
+                    className={`relative flex min-h-[58px] items-center gap-3 rounded-xl p-3 text-left transition-all ${
+                      isSelected
+                        ? 'bg-slate-900 text-white shadow-md ring-2 ring-amber-400'
+                        : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 hover:text-slate-900'
                     }`}
                   >
-                    {hasShift ? '● Em Usinagem' : 'Disponível'}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
+                    <div
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                        isSelected
+                          ? 'bg-slate-800 text-amber-400'
+                          : 'bg-white text-slate-600 shadow-2xs'
+                      }`}
+                    >
+                      <User className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-bold sm:text-sm">{op.nome}</div>
+                      <div
+                        className={`truncate text-[11px] font-medium ${
+                          hasShift
+                            ? isSelected
+                              ? 'text-amber-300'
+                              : 'text-emerald-700 font-semibold'
+                            : isSelected
+                            ? 'text-slate-400'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        {hasShift ? '● Em Usinagem' : 'Disponível'}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       {/* ========================================================================= */}
-      {/* ETAPA 2: CRONÔMETRO EM TEMPO REAL OU LISTA DE OPERAÇÕES                   */}
+      {/* SEÇÃO 2: CRONÔMETRO EM TEMPO REAL OU LISTA DE OPERAÇÕES                   */}
       {/* ========================================================================= */}
       {activeApontamento ? (
-        /* CARD DE APONTAMENTO EM ANDAMENTO COM CRONÔMETRO GIGANTE */
+        /* CARD DE APONTAMENTO EM ANDAMENTO COM CRONÔMETRO GIGANTE (SEMPRE FINALIZÁVEL) */
         <div className="rounded-2xl border-2 border-emerald-500 bg-slate-900 p-6 text-white shadow-xl">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             {/* Informações da Tarefa */}
@@ -430,7 +686,7 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                 <div className="flex items-center gap-1.5">
                   <Cpu className="h-4 w-4 text-amber-400" />
                   <span className="font-semibold text-white">
-                    {activeApontamento.maquina?.nome}
+                    {activeApontamento.centro_custo?.nome || activeApontamento.maquina?.nome}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -467,6 +723,18 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
             </div>
           </div>
         </div>
+      ) : perfil === 'operador' && operatorWorkstations.length === 0 ? (
+        /* ALERTA OBRIGATÓRIO: OPERADOR SEM NENHUM POSTO VINCULADO */
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-8 text-center text-amber-900 shadow-2xs">
+          <AlertCircle className="mx-auto h-12 w-12 text-amber-600 mb-3" />
+          <h3 className="text-base font-bold text-amber-950 sm:text-lg">
+            Nenhum posto de trabalho vinculado ao seu usuário. Fale com seu líder.
+          </h3>
+          <p className="mt-1.5 text-xs text-amber-800 max-w-md mx-auto">
+            Para iniciar apontamentos de usinagem no chão de fábrica, seu líder ou gerente industrial
+            precisa atribuir os postos de trabalho autorizados no seu cadastro de operador.
+          </p>
+        </div>
       ) : (
         /* LISTA DE OPERAÇÕES DISPONÍVEIS PARA INICIAR */
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
@@ -479,27 +747,31 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                 </h3>
               </div>
               <p className="text-xs text-slate-500">
-                Selecione a operação abaixo e toque em <strong>"Iniciar"</strong> para ligar o
-                cronômetro de horas
+                {perfil === 'operador'
+                  ? 'Operações ordenadas por prazo de entrega do projeto e sequência técnica'
+                  : 'Selecione a operação abaixo e clique em "Iniciar" para registrar o início de usinagem'}
               </p>
             </div>
 
-            {/* Filtro Rápido por Centro de Custo */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-500">Centro de Custo:</span>
-              <select
-                value={maquinaFilter}
-                onChange={(e) => setMaquinaFilter(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-2xs focus:outline-none"
-              >
-                <option value="Todas">Todos os Centros de Custo</option>
-                {maquinas.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.nome}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Filtro Rápido por Centro de Custo para Líder, Gerente e Admin */}
+            {perfil !== 'operador' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-slate-500">Centro de Custo:</span>
+                <select
+                  value={maquinaFilter}
+                  onChange={(e) => setMaquinaFilter(e.target.value)}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-2xs focus:outline-none"
+                >
+                  <option value="Todas">Todos os Centros de Custo</option>
+                  <option value="sem_centro">Sem centro de custo</option>
+                  {validMaquinas.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.nome} ({m.origem === 'terceirizado' ? 'Terceiro' : 'Interno'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Busca Rápida */}
@@ -514,8 +786,8 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
             />
           </div>
 
-          {/* Lista de Cards de Operações com Botões Grandes */}
-          <div className="mt-4 space-y-3">
+          {/* Lista de Cards de Operações */}
+          <div className="mt-4 space-y-4">
             {isLoadingOps ? (
               <div className="py-8 text-center text-xs text-slate-500">
                 Carregando operações disponíveis...
@@ -539,79 +811,51 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                   }}
                 />
               )
-            ) : (
-              filteredOperacoes.map((op) => (
-                <div
-                  key={op.id}
-                  className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-2xs transition-all hover:border-slate-300 md:flex-row md:items-center md:justify-between"
-                >
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-bold text-slate-900">
-                        {op.projeto?.codigo}
-                      </span>
-                      <span className="text-slate-300">·</span>
-                      {op.componente?.codigo && (
-                        <span className="font-mono text-[10px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                          {op.componente.codigo}
-                        </span>
-                      )}
-                      <span className="text-xs font-semibold text-slate-700">
-                        {op.componente?.nome}
-                      </span>
-                      <span className="rounded bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 font-mono text-[10px] font-bold">
-                        Qtd: {op.componente?.quantidade || 1} un
-                      </span>
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
-                        {op.componente?.material}
-                      </span>
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                          op.status === 'Em andamento'
-                            ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                            : 'bg-slate-100 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        {op.status}
-                      </span>
-                    </div>
-
-                    <h4 className="text-sm font-bold text-slate-900">
-                      Seq #{op.sequencia}: {op.descricao}
-                    </h4>
-
-                    <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                      <div className="flex items-center gap-1.5">
-                        <Cpu className="h-3.5 w-3.5 text-slate-400" />
-                        <span className="font-medium text-slate-700">{(op.centro_custo || op.maquina)?.nome}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 font-mono">
-                        <Clock className="h-3.5 w-3.5 text-slate-400" />
-                        <span>Estimadas: {formatHours(op.horas_estimadas)}</span>
-                        <span>· Já apontadas: {formatHours(op.horasApontadas)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Botão Grande de Iniciar Apontamento */}
-                  <button
-                    type="button"
-                    onClick={() => handleIniciarApontamento(op)}
-                    disabled={isSubmitting}
-                    className="flex min-h-[50px] shrink-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white shadow-xs transition-transform hover:bg-slate-800 active:scale-98 md:w-auto"
+            ) : operacoesAgrupadasPorPosto ? (
+              /* MODO AGRUPADO POR POSTO DE TRABALHO QUANDO O OPERADOR TEM MAIS DE 1 POSTO */
+              <div className="space-y-6">
+                {operacoesAgrupadasPorPosto.map(({ centro, operacoes }) => (
+                  <div
+                    key={centro.id}
+                    className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3"
                   >
-                    <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
-                    <span>Iniciar Apontamento</span>
-                  </button>
-                </div>
-              ))
+                    <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-4 w-4 text-slate-700" />
+                        <h4 className="text-sm font-bold text-slate-900">{centro.nome}</h4>
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          ({centro.categoria})
+                        </span>
+                      </div>
+                      <span className="text-xs font-semibold text-slate-500">
+                        {operacoes.length} operação(ões) aguardando
+                      </span>
+                    </div>
+
+                    {operacoes.length === 0 ? (
+                      <p className="text-xs text-slate-400 italic py-2">
+                        Nenhuma operação pendente para este posto no momento.
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {operacoes.map(renderOperationCard)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              /* LISTA PADRÃO ORDENADA POR PRAZO E DEPOIS POR SEQUÊNCIA */
+              <div className="space-y-3">
+                {filteredOperacoes.map(renderOperationCard)}
+              </div>
             )}
           </div>
         </div>
       )}
 
       {/* ========================================================================= */}
-      {/* ETAPA 3: HISTÓRICO DE APONTAMENTOS DO DIA DO OPERADOR                    */}
+      {/* SEÇÃO 3: HISTÓRICO DE APONTAMENTOS DO DIA DO OPERADOR                    */}
       {/* ========================================================================= */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xs">
         <div className="flex flex-col gap-2 p-5 border-b border-slate-100 sm:flex-row sm:items-center sm:justify-between">
@@ -645,7 +889,7 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
               icon={Clock}
               title="Nenhum apontamento registrado hoje"
               description={`O operador ${selectedOperador?.nome || ''} ainda não possui registros de início ou término computados para este filtro.`}
-              actionLabel={mostrarApenasHoje ? "Exibir Todo o Histórico" : undefined}
+              actionLabel={mostrarApenasHoje ? 'Exibir Todo o Histórico' : undefined}
               onAction={mostrarApenasHoje ? () => setMostrarApenasHoje(false) : undefined}
             />
           </div>
@@ -748,79 +992,46 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
           setFinalizarModal({ isOpen: false, apontamento: null, concluirOperacao: true })
         }
         title="Finalizar Apontamento de Usinagem"
-        subtitle="Confirme o encerramento do turno neste centro de custo"
+        subtitle="Confirme o encerramento da contagem de tempo para esta tarefa"
         maxWidth="md"
       >
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>Tempo Registrado Nesta Etapa:</span>
-              <span className="font-mono text-base font-bold text-slate-900">
-                {formatStopwatch(elapsedSeconds)}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+            <div className="text-xs text-slate-500 font-medium">Tarefa em Execução:</div>
+            <div className="font-mono text-xs font-bold text-slate-900">
+              {finalizarModal.apontamento?.projeto?.codigo} ·{' '}
+              {finalizarModal.apontamento?.componente?.nome}
+            </div>
+            <div className="text-sm font-bold text-slate-900">
+              {finalizarModal.apontamento?.operacao?.descricao}
+            </div>
+            <div className="text-xs text-slate-600">
+              Operador: <strong>{selectedOperador?.nome}</strong> · Posto:{' '}
+              <strong>
+                {finalizarModal.apontamento?.centro_custo?.nome ||
+                  finalizarModal.apontamento?.maquina?.nome}
+              </strong>
+            </div>
+          </div>
+
+          <label className="flex items-start gap-3 rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50 cursor-pointer transition-colors">
+            <input
+              type="checkbox"
+              checked={finalizarModal.concluirOperacao}
+              onChange={(e) =>
+                setFinalizarModal((prev) => ({ ...prev, concluirOperacao: e.target.checked }))
+              }
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+            />
+            <div className="text-xs">
+              <span className="font-bold text-slate-900 block">
+                Marcar esta Operação como CONCLUÍDA
+              </span>
+              <span className="text-slate-500 block mt-0.5">
+                Desmarque apenas se a operação precisará continuar em outro turno ou após parada.
               </span>
             </div>
-            <div className="mt-2 text-xs text-slate-700">
-              <strong>Operação:</strong> {finalizarModal.apontamento?.operacao?.descricao}
-            </div>
-            <div className="text-xs text-slate-500">
-              Peça: {finalizarModal.apontamento?.componente?.nome} ·{' '}
-              {(finalizarModal.apontamento?.centro_custo || finalizarModal.apontamento?.maquina)?.nome}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
-            <span className="block text-xs font-bold text-blue-900">
-              A operação foi concluída nesta etapa?
-            </span>
-            <p className="mt-0.5 text-xs text-blue-700">
-              Indique se a usinagem da operação foi 100% finalizada ou se ainda necessitará de
-              novos apontamentos posteriormente.
-            </p>
-
-            <div className="mt-3 space-y-2">
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-blue-200 bg-white p-3 transition-colors hover:bg-blue-50/50">
-                <input
-                  type="radio"
-                  name="conclusao"
-                  checked={finalizarModal.concluirOperacao === true}
-                  onChange={() =>
-                    setFinalizarModal((prev) => ({ ...prev, concluirOperacao: true }))
-                  }
-                  className="mt-0.5"
-                />
-                <div className="text-xs">
-                  <strong className="block font-bold text-slate-900">
-                    Sim, operação concluída 100%
-                  </strong>
-                  <span className="text-slate-500">
-                    O status passará para "Concluída". Se todas as operações desta peça forem
-                    concluídas, o componente será marcado como Concluído automaticamente.
-                  </span>
-                </div>
-              </label>
-
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 bg-white p-3 transition-colors hover:bg-slate-50">
-                <input
-                  type="radio"
-                  name="conclusao"
-                  checked={finalizarModal.concluirOperacao === false}
-                  onChange={() =>
-                    setFinalizarModal((prev) => ({ ...prev, concluirOperacao: false }))
-                  }
-                  className="mt-0.5"
-                />
-                <div className="text-xs">
-                  <strong className="block font-bold text-slate-900">
-                    Não, operação continua Em Andamento
-                  </strong>
-                  <span className="text-slate-500">
-                    Pausa para refeição, troca de turno ou aguardo de nova ferramenta. A operação
-                    permanecerá disponível para novos apontamentos.
-                  </span>
-                </div>
-              </label>
-            </div>
-          </div>
+          </label>
 
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
             <button
@@ -828,25 +1039,24 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
               onClick={() =>
                 setFinalizarModal({ isOpen: false, apontamento: null, concluirOperacao: true })
               }
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
               Cancelar
             </button>
             <button
               type="button"
-              onClick={handleConfirmFinalizar}
               disabled={isSubmitting}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-slate-800 disabled:opacity-50"
+              onClick={handleConfirmFinalizar}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-rose-500 disabled:opacity-50"
             >
-              <Square className="h-4 w-4 fill-white" />
-              <span>Confirmar e Registrar Término</span>
+              {isSubmitting ? 'Finalizando...' : 'Confirmar e Finalizar'}
             </button>
           </div>
         </div>
       </Modal>
 
       {/* ========================================================================= */}
-      {/* MODAL DE AJUSTE MANUAL DE INÍCIO / FIM (ESQUECIMENTO)                     */}
+      {/* MODAL DE AJUSTE MANUAL DE HORÁRIO (COM AUDITORIA)                        */}
       {/* ========================================================================= */}
       <Modal
         isOpen={ajusteModal.isOpen}
@@ -859,75 +1069,72 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
             motivo: '',
           })
         }
-        title="Ajuste Manual de Horário"
-        subtitle="Corrija horários de início ou fim em caso de esquecimento de acionamento do tablet"
+        title="Ajustar Horário de Apontamento"
+        subtitle="Correção manual de horário em caso de esquecimento de início ou término de turno"
         maxWidth="md"
       >
         <div className="space-y-4">
           {ajusteModal.error && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 font-semibold">
-              {ajusteModal.error}
+            <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{ajusteModal.error}</span>
             </div>
           )}
 
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs space-y-1">
             <div>
-              <strong>Operador:</strong> {ajusteModal.apontamento?.operador?.nome}
+              Operador: <strong>{selectedOperador?.nome}</strong>
             </div>
             <div>
-              <strong>Centro de Custo:</strong> {(ajusteModal.apontamento?.centro_custo || ajusteModal.apontamento?.maquina)?.nome}
-            </div>
-            <div>
-              <strong>Operação:</strong> {ajusteModal.apontamento?.operacao?.descricao}
+              Operação: <strong>{ajusteModal.apontamento?.operacao?.descricao}</strong>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-slate-700">
-                Horário de Início <span className="text-rose-500">*</span>
+                Início do Turno <span className="text-rose-500">*</span>
               </label>
               <input
                 type="datetime-local"
                 value={ajusteModal.inicioStr}
                 onChange={(e) =>
-                  setAjusteModal({ ...ajusteModal, inicioStr: e.target.value, error: undefined })
+                  setAjusteModal((prev) => ({ ...prev, inicioStr: e.target.value, error: undefined }))
                 }
-                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-mono text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
               />
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-700">
-                Horário de Término
+                Término do Turno (ou deixe vazio se ainda em curso)
               </label>
               <input
                 type="datetime-local"
                 value={ajusteModal.fimStr}
                 onChange={(e) =>
-                  setAjusteModal({ ...ajusteModal, fimStr: e.target.value, error: undefined })
+                  setAjusteModal((prev) => ({ ...prev, fimStr: e.target.value, error: undefined }))
                 }
-                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-mono text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
               />
-              <span className="text-[10px] text-slate-400">Deixe em branco se ainda em curso</span>
             </div>
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-slate-700">
-              Motivo do Ajuste Manual <span className="text-rose-500">*</span>
+              Justificativa do Ajuste Manual <span className="text-rose-500">*</span>
             </label>
             <input
               type="text"
-              placeholder="Ex: Esquecimento de acionar o tablet no início do turno"
+              placeholder="Ex: Operador iniciou usinagem às 08h mas esqueceu de registrar no tablet..."
               value={ajusteModal.motivo}
               onChange={(e) =>
-                setAjusteModal({ ...ajusteModal, motivo: e.target.value, error: undefined })
+                setAjusteModal((prev) => ({ ...prev, motivo: e.target.value, error: undefined }))
               }
-              className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
             />
             <p className="mt-1 text-[11px] text-slate-500">
-              O ajuste será auditado e sinalizado no histórico como "Ajustado Manualmente".
+              Esta justificativa ficará gravada no log de auditoria do apontamento.
             </p>
           </div>
 
@@ -943,18 +1150,17 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                   motivo: '',
                 })
               }
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
               Cancelar
             </button>
             <button
               type="button"
-              onClick={handleConfirmAjuste}
               disabled={isSubmitting}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-slate-800 disabled:opacity-50"
+              onClick={handleSaveAjuste}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-slate-800 disabled:opacity-50"
             >
-              <Check className="h-4 w-4" />
-              <span>Salvar Ajuste de Horário</span>
+              {isSubmitting ? 'Salvando...' : 'Salvar Ajuste'}
             </button>
           </div>
         </div>

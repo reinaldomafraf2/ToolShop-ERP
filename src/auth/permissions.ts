@@ -13,7 +13,8 @@ export type Recurso =
   | 'centros_custo'
   | 'maquinas'
   | 'operadores'
-  | 'usuarios';
+  | 'usuarios'
+  | 'configuracoes';
 
 /**
  * AÇÕES SOBRE OS RECURSOS
@@ -40,6 +41,7 @@ export type Acao =
  * - custos e valores (valor_unitario, custo_hora, custo real): somente gerente e admin
  * - clientes, centros_custo, operadores: gerente/admin = tudo; lider = ver
  * - usuarios: somente admin
+ * - configuracoes: gerente e admin = tudo; lider = ver
  */
 export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly Acao[]>> = {
   operador: {
@@ -53,6 +55,7 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     maquinas: [],
     operadores: [],
     usuarios: [],
+    configuracoes: [],
   },
   lider: {
     apontamento: ['ver', 'ver_proprio', 'criar', 'criar_proprio', 'ajustar'], // ver e corrigir os da equipe
@@ -65,6 +68,7 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     maquinas: ['ver'], // somente leitura
     operadores: ['ver'], // somente leitura
     usuarios: [],
+    configuracoes: ['ver'],
   },
   gerente: {
     apontamento: ['ver', 'ver_proprio', 'criar', 'criar_proprio', 'ajustar', 'excluir', 'tudo'],
@@ -77,6 +81,7 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     maquinas: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     operadores: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     usuarios: [], // somente admin
+    configuracoes: ['ver', 'editar', 'tudo'],
   },
   admin: {
     apontamento: ['ver', 'ver_proprio', 'criar', 'criar_proprio', 'ajustar', 'excluir', 'tudo'],
@@ -89,6 +94,7 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     maquinas: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     operadores: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     usuarios: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
+    configuracoes: ['ver', 'editar', 'tudo'],
   },
 } as const;
 
@@ -153,12 +159,15 @@ export function canAccessTab(
       return can(perfil, 'ver', 'apontamento') || can(perfil, 'ver_proprio', 'apontamento');
     case 'usuarios':
       return can(perfil, 'ver', 'usuarios');
+    case 'configuracoes':
+      return can(perfil, 'ver', 'configuracoes');
     case 'sem_permissao':
       return true;
     default:
       return false;
   }
 }
+
 
 /**
  * Retorna a aba inicial padrão com base no perfil do usuário

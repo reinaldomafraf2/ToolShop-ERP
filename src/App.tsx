@@ -26,9 +26,11 @@ import { OperadoresView } from './views/OperadoresView';
 import { ClientesView } from './views/ClientesView';
 import { ApontamentoView } from './views/ApontamentoView';
 import { UsuariosView } from './views/UsuariosView';
+import { ConfiguracoesView } from './views/ConfiguracoesView';
 import { SemPermissaoView } from './views/SemPermissaoView';
 import { LoginView } from './views/LoginView';
 import { CriarPrimeiroAdminView } from './views/CriarPrimeiroAdminView';
+import { isExampleItem } from './data/seedData';
 import { Loader2 } from 'lucide-react';
 
 function AppContent() {
@@ -70,6 +72,7 @@ function AppContent() {
         'clientes',
         'apontamento',
         'usuarios',
+        'configuracoes',
       ];
 
       if (hash && validTabs.includes(hash)) {
@@ -101,6 +104,7 @@ function AppContent() {
         'clientes',
         'apontamento',
         'usuarios',
+        'configuracoes',
       ];
 
       if (hash && validTabs.includes(hash)) {
@@ -113,6 +117,7 @@ function AppContent() {
     };
 
     window.addEventListener('hashchange', handleHashChange);
+
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [isAuthenticated, canAccessTab]);
 
@@ -136,11 +141,11 @@ function AppContent() {
         toolShopService.getApontamentos(),
       ]);
 
-      setProjetos(projList);
-      setCentrosCusto(maqList);
-      setOperadores(opList);
-      setClientes(cliList);
-      setApontamentos(aptList);
+      setProjetos(projList.filter((p) => !isExampleItem(p)));
+      setCentrosCusto(maqList.filter((m) => !isExampleItem(m)));
+      setOperadores(opList.filter((o) => !isExampleItem(o)));
+      setClientes(cliList.filter((c) => !isExampleItem(c)));
+      setApontamentos(aptList.filter((a) => !isExampleItem(a)));
     } catch (error) {
       console.error('Erro ao carregar dados da ferramentaria:', error);
     } finally {
@@ -150,17 +155,22 @@ function AppContent() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      loadData();
+      toolShopService
+        .apagarDadosDeExemplo()
+        .catch((err) => console.warn('Purga automática de dados de exemplo:', err))
+        .finally(() => {
+          loadData();
+        });
     }
   }, [isAuthenticated, loadData]);
 
   const handleResetSeed = async () => {
     setIsResetting(true);
     try {
-      await toolShopService.resetSeedData();
+      await toolShopService.apagarDadosDeExemplo();
       await loadData();
     } catch (err) {
-      console.error('Erro ao restaurar dados seed:', err);
+      console.error('Erro ao purgar dados de exemplo:', err);
     } finally {
       setIsResetting(false);
     }
@@ -265,6 +275,7 @@ function AppContent() {
                 <OperadoresView
                   operadores={operadores}
                   apontamentos={apontamentos}
+                  centrosCusto={centrosCusto}
                   onRefresh={loadData}
                 />
               )}
@@ -289,7 +300,17 @@ function AppContent() {
               {currentTab === 'usuarios' && (
                 <UsuariosView operadores={operadores} />
               )}
+
+              {currentTab === 'configuracoes' && (
+                <ConfiguracoesView
+                  operadores={operadores}
+                  centrosCusto={centrosCusto}
+                  onNavigateToOperadores={() => handleSelectTab('operadores')}
+                  onRefresh={loadData}
+                />
+              )}
             </>
+
           )}
         </main>
       </div>

@@ -25,6 +25,8 @@ import {
   ModeloComponente,
   HistoricoImportacao,
   OrigemCentroCusto,
+  OperadorCentroCusto,
+  ConfiguracoesSistema,
 } from '../types';
 import {
   IBaseRepository,
@@ -38,6 +40,8 @@ import {
   IUsuarioRepository,
   IModeloComponenteRepository,
   IHistoricoImportacaoRepository,
+  IOperadorCentroCustoRepository,
+  IConfiguracoesRepository,
 } from './interfaces';
 import { generateUUID, DEFAULT_EMPRESA_ID } from '../utils/uuid';
 import {
@@ -51,6 +55,8 @@ import {
   usuarioRepository as localUsuarioRepo,
   modeloComponenteRepository as localModeloRepo,
   historicoImportacaoRepository as localHistoricoRepo,
+  operadorCentroCustoRepository as localOperadorCentroRepo,
+  configuracoesRepository as localConfiguracoesRepo,
 } from './localStorageRepositories';
 import {
   SEED_CLIENTES,
@@ -62,7 +68,12 @@ import {
   SEED_APONTAMENTOS,
   SEED_MODELOS_COMPONENTES,
   SEED_HISTORICO_IMPORTACOES,
+  SEED_CONFIGURACOES,
+  DEMO_SEED_IDS,
+  isExampleId,
+  isExampleItem,
 } from '../data/seedData';
+
 
 // Repositório Base com Persistência em Firestore e Fallback Local
 export class FirestoreBaseRepository<T extends { id: string; empresa_id: string }>
@@ -83,23 +94,32 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
         const items: T[] = [];
-        snapshot.forEach((d) => items.push(d.data() as T));
+        snapshot.forEach((d) => {
+          const item = d.data() as T;
+          if (!isExampleItem(item)) {
+            items.push(item);
+          }
+        });
         // Atualiza cache local
         await this.localRepo.saveAll(items).catch(() => {});
         return items;
       }
-      return this.localRepo.getAll(empresaId);
+      const local = await this.localRepo.getAll(empresaId);
+      return local.filter((item) => !isExampleItem(item));
     } catch {
-      return this.localRepo.getAll(empresaId);
+      const local = await this.localRepo.getAll(empresaId);
+      return local.filter((item) => !isExampleItem(item));
     }
   }
 
   async getById(id: string): Promise<T | null> {
+    if (isExampleId(id)) return null;
     try {
       const docRef = doc(db, this.collectionName, id);
       const snapshot = await getDoc(docRef);
       if (snapshot.exists()) {
-        return snapshot.data() as T;
+        const item = snapshot.data() as T;
+        return isExampleItem(item) ? null : item;
       }
       return this.localRepo.getById(id);
     } catch {
@@ -438,45 +458,163 @@ export class FirestoreHistoricoImportacaoRepository
   }
 }
 
-// Sincronizador inicial para Firestore caso a base do Firebase esteja vazia
-export async function syncSeedDataToFirestore(): Promise<void> {
-  try {
-    const colRef = collection(db, 'clientes');
-    const snap = await getDocs(query(colRef, limit(1))).catch(() => null);
-    if (!snap || snap.empty) {
-      console.info('Inicializando coleções no Firestore...');
-      for (const c of SEED_CLIENTES) {
-        await setDoc(doc(db, 'clientes', c.id), c).catch(() => {});
-      }
-      for (const cc of SEED_CENTROS_CUSTO) {
-        await setDoc(doc(db, 'centros_custo', cc.id), cc).catch(() => {});
-      }
-      for (const op of SEED_OPERADORES) {
-        await setDoc(doc(db, 'operadores', op.id), op).catch(() => {});
-      }
-      for (const p of SEED_PROJETOS) {
-        await setDoc(doc(db, 'projetos', p.id), p).catch(() => {});
-      }
-      for (const comp of SEED_COMPONENTES) {
-        await setDoc(doc(db, 'componentes', comp.id), comp).catch(() => {});
-      }
-      for (const o of SEED_OPERACOES) {
-        await setDoc(doc(db, 'operacoes', o.id), o).catch(() => {});
-      }
-      for (const apt of SEED_APONTAMENTOS) {
-        await setDoc(doc(db, 'apontamentos', apt.id), apt).catch(() => {});
-      }
-      for (const m of SEED_MODELOS_COMPONENTES) {
-        await setDoc(doc(db, 'modelos_componentes', m.id), m).catch(() => {});
-      }
-      for (const h of SEED_HISTORICO_IMPORTACOES) {
-        await setDoc(doc(db, 'historico_importacoes', h.id), h).catch(() => {});
-      }
-      console.info('Coleções no Firestore inicializadas com sucesso.');
-    }
-  } catch (err) {
-    console.warn('Sincronização com Firestore diferida:', err);
+// 11. Vínculo Operador - Centros de Custo (Postos de Trabalho Internos)
+export class FirestoreOperadorCentroCustoRepository
+  extends FirestoreBaseRepository<OperadorCentroCusto>
+  implements IOperadorCentroCustoRepository
+{
+  constructor() {
+    super('operador_centros_custo', localOperadorCentroRepo);
   }
+
+  async getByOperadorId(
+    operadorId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<OperadorCentroCusto[]> {
+    try {
+      const colRef = collection(db, this.collectionName);
+      const q = query(colRef, where('operador_id', '==', operadorId));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const items: OperadorCentroCusto[] = [];
+        snap.forEach((d) => items.push(d.data() as OperadorCentroCusto));
+        return items;
+      }
+      return (this.localRepo as any).getByOperadorId(operadorId, empresaId);
+    } catch {
+      return (this.localRepo as any).getByOperadorId(operadorId, empresaId);
+    }
+
+  }
+
+  async getByCentroCustoId(
+    centroCustoId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<OperadorCentroCusto[]> {
+    try {
+      const colRef = collection(db, this.collectionName);
+      const q = query(colRef, where('centro_custo_id', '==', centroCustoId));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const items: OperadorCentroCusto[] = [];
+        snap.forEach((d) => items.push(d.data() as OperadorCentroCusto));
+        return items;
+      }
+      return (this.localRepo as any).getByCentroCustoId(centroCustoId, empresaId);
+    } catch {
+      return (this.localRepo as any).getByCentroCustoId(centroCustoId, empresaId);
+    }
+  }
+
+  async deleteByOperadorECentroCusto(
+    operadorId: string,
+    centroCustoId: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<boolean> {
+    try {
+      const colRef = collection(db, this.collectionName);
+      const q = query(
+        colRef,
+        where('operador_id', '==', operadorId),
+        where('centro_custo_id', '==', centroCustoId)
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+          await deleteDoc(doc(db, this.collectionName, docSnap.id)).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn('Erro ao deletar vínculo no Firestore:', err);
+    }
+    return (this.localRepo as any).deleteByOperadorECentroCusto(
+      operadorId,
+      centroCustoId,
+      empresaId
+    );
+  }
+}
+
+// 12. Configurações do Sistema
+export class FirestoreConfiguracoesRepository
+  extends FirestoreBaseRepository<ConfiguracoesSistema>
+  implements IConfiguracoesRepository
+{
+  constructor() {
+    super('configuracoes', localConfiguracoesRepo);
+  }
+
+  async getConfig(empresaId: string = DEFAULT_EMPRESA_ID): Promise<ConfiguracoesSistema> {
+    try {
+      const docRef = doc(db, this.collectionName, 'config_padrao');
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const cfg = snap.data() as ConfiguracoesSistema;
+        await this.localRepo.update(cfg.id, cfg).catch(() => {});
+        return cfg;
+      }
+    } catch {}
+    return (this.localRepo as any).getConfig(empresaId);
+  }
+
+  async updateConfig(
+    updates: Partial<ConfiguracoesSistema>,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<ConfiguracoesSistema> {
+    const current = await this.getConfig(empresaId);
+    const updated = { ...current, ...updates };
+    try {
+      await setDoc(doc(db, this.collectionName, 'config_padrao'), updated, { merge: true });
+    } catch (err) {
+      console.warn('Falha ao atualizar config no Firestore:', err);
+    }
+    return (this.localRepo as any).updateConfig(updates, empresaId);
+  }
+}
+
+// Purga de todos os registros de demonstração no Firestore
+export async function purgeExampleDataFromFirestore(): Promise<void> {
+  try {
+    for (const id of DEMO_SEED_IDS.clientes) {
+      await deleteDoc(doc(db, 'clientes', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.centros_custo) {
+      await deleteDoc(doc(db, 'centros_custo', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.operadores) {
+      await deleteDoc(doc(db, 'operadores', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.projetos) {
+      await deleteDoc(doc(db, 'projetos', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.componentes) {
+      await deleteDoc(doc(db, 'componentes', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.operacoes) {
+      await deleteDoc(doc(db, 'operacoes', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.apontamentos) {
+      await deleteDoc(doc(db, 'apontamentos', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.modelos_componentes) {
+      await deleteDoc(doc(db, 'modelos_componentes', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.historico_importacoes) {
+      await deleteDoc(doc(db, 'historico_importacoes', id)).catch(() => {});
+    }
+    for (const id of DEMO_SEED_IDS.operador_centros_custo) {
+      await deleteDoc(doc(db, 'operador_centros_custo', id)).catch(() => {});
+    }
+    // Garante que a configuração de parâmetros de sistema exista no Firestore
+    await setDoc(doc(db, 'configuracoes', 'config_padrao'), SEED_CONFIGURACOES, { merge: true }).catch(() => {});
+  } catch (err) {
+    console.warn('Execução de limpeza no Firestore diferida:', err);
+  }
+}
+
+// Inicializador limpo para Firestore
+export async function syncSeedDataToFirestore(): Promise<void> {
+  await purgeExampleDataFromFirestore();
 }
 
 // Singletons Firestore para consumo em serviços
@@ -491,3 +629,6 @@ export const apontamentoRepository = new FirestoreApontamentoRepository();
 export const usuarioRepository = new FirestoreUsuarioRepository();
 export const modeloComponenteRepository = new FirestoreModeloComponenteRepository();
 export const historicoImportacaoRepository = new FirestoreHistoricoImportacaoRepository();
+export const operadorCentroCustoRepository = new FirestoreOperadorCentroCustoRepository();
+export const configuracoesRepository = new FirestoreConfiguracoesRepository();
+

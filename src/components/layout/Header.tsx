@@ -48,11 +48,16 @@ const TAB_TITLES: Record<ViewTab, { title: string; subtitle: string }> = {
     title: 'Gestão de Usuários',
     subtitle: 'Controle de acesso, perfis e credenciais de segurança',
   },
+  configuracoes: {
+    title: 'Configurações de Chão de Fábrica',
+    subtitle: 'Parâmetros de restrição de postos e regras de sequenciamento de operações',
+  },
   sem_permissao: {
     title: 'Acesso Restrito',
     subtitle: 'Página sem permissão de acesso para o perfil atual',
   },
 };
+
 
 export const Header: React.FC<HeaderProps> = ({
   currentTab,
