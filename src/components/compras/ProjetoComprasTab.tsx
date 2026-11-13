@@ -5,16 +5,26 @@ import {
   Fornecedor,
   StatusItemCompra,
   ConfiguracoesSistema,
+  ItemEstoqueComDetalhes,
 } from '../../types';
 import { comprasService, PreviaGeracaoNecessidades, SnapshotDesfazer } from '../../services/comprasService';
+import { estoqueService } from '../../services/estoqueService';
 import { toolShopService } from '../../services/toolShopService';
 import { useAuth } from '../../auth/AuthContext';
 import { formatDateBR } from '../../utils/formatters';
+import { navigateToEstoqueItem } from '../../utils/estoqueNavigation';
+import {
+  getQuantidadeRecebidaItem,
+  getQuantidadePendenteItem,
+  isRecebimentoParcial,
+} from '../../utils/materialStatus';
 import { GerarNecessidadesModal } from './GerarNecessidadesModal';
 import { ItemCompraDetalhesDrawer } from './ItemCompraDetalhesDrawer';
+import { DarEntradaRecebimentoModal } from './DarEntradaRecebimentoModal';
 import { BatchActionModal, TipoBatchAction } from './BatchActionModal';
 import { SolicitacaoCompraPdfModal } from './SolicitacaoCompraPdfModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { Modal } from '../common/Modal';
 import { exportComprasToExcel } from '../../utils/comprasExport';
 import {
   ShoppingCart,
@@ -35,6 +45,9 @@ import {
   AlertCircle,
   Package,
   Trash2,
+  PackagePlus,
+  ExternalLink,
+  Tag,
 } from 'lucide-react';
 
 interface ProjetoComprasTabProps {
@@ -42,18 +55,24 @@ interface ProjetoComprasTabProps {
   onRefresh?: () => void;
 }
 
+type AbaProjetoCompras = 'pendentes' | 'recebidos' | 'cancelados' | 'todos';
+
 export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
   projeto,
   onRefresh,
 }) => {
-  const { perfil } = useAuth();
+  const { user, perfil } = useAuth();
   const canEdit = perfil === 'gerente' || perfil === 'admin';
-  const isLider = perfil === 'lider';
+  const canReceber = canEdit || perfil === 'lider';
 
   const [itens, setItens] = useState<ItemCompraComDetalhes[]>([]);
+  const [itensEstoque, setItensEstoque] = useState<ItemEstoqueComDetalhes[]>([]);
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [configEmpresa, setConfigEmpresa] = useState<ConfiguracoesSistema | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Aba interna (Pendentes por padrão)
+  const [abaAtiva, setAbaAtiva] = useState<AbaProjetoCompras>('pendentes');
 
   // Filtros internos da aba
   const [search, setSearch] = useState('');
@@ -68,6 +87,12 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
   const [previaNecessidades, setPreviaNecessidades] = useState<PreviaGeracaoNecessidades | null>(null);
   const [isGerarModalOpen, setIsGerarModalOpen] = useState(false);
   const [itemSelecionadoDrawer, setItemSelecionadoDrawer] = useState<ItemCompraComDetalhes | null>(null);
+  const [itemParaReceber, setItemParaReceber] = useState<ItemCompraComDetalhes | null>(null);
+  const [itemParaEstornar, setItemParaEstornar] = useState<ItemCompraComDetalhes | null>(null);
+  const [motivoEstorno, setMotivoEstorno] = useState('');
+  const [erroEstorno, setErroEstorno] = useState<string | null>(null);
+  const [isEstornando, setIsEstornando] = useState(false);
+
   const [batchActionType, setBatchActionType] = useState<TipoBatchAction | null>(null);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
@@ -97,14 +122,19 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [itensProj, fornList, config] = await Promise.all([
+      const [itensProj, estoqueList, fornList, config] = await Promise.all([
         comprasService.getItensCompraComDetalhes(projeto.empresa_id, projeto.id),
+        estoqueService.getItensComDetalhes(projeto.empresa_id).catch(() => []),
         comprasService.getFornecedores(projeto.empresa_id),
         toolShopService.getConfiguracoes().catch(() => null),
       ]);
       setItens(itensProj);
+      setItensEstoque(estoqueList);
       setFornecedores(fornList);
       if (config) setConfigEmpresa(config);
+      setItemSelecionadoDrawer((prev) =>
+        prev ? itensProj.find((x) => x.id === prev.id) || null : null
+      );
     } catch (err: any) {
       console.error('Erro ao carregar dados de compras do projeto:', err);
       setFeedback({ type: 'error', message: err.message || 'Erro ao carregar compras do projeto.' });
@@ -126,29 +156,56 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
 
   // Resumo estatístico
   const resumo = useMemo(() => {
-    const total = itens.length;
+    const ativos = itens.filter((i) => i.status !== 'cancelado');
+    const total = ativos.length;
     const a_solicitar = itens.filter((i) => i.status === 'a_solicitar').length;
     const solicitados = itens.filter((i) => i.status === 'solicitado').length;
     const comprados = itens.filter((i) => i.status === 'comprado').length;
     const recebidos = itens.filter((i) => i.status === 'recebido' || i.status === 'atendido_estoque').length;
+    const cancelados = itens.filter((i) => i.status === 'cancelado').length;
+    const pendentes = a_solicitar + solicitados + comprados;
     const atrasados = itens.filter((i) => i.atrasado).length;
 
     const percentRecebidos = total > 0 ? Math.round((recebidos / total) * 100) : 0;
 
     return {
       total,
+      totalGeral: itens.length,
+      pendentes,
       a_solicitar,
       solicitados,
       comprados,
       recebidos,
+      cancelados,
       atrasados,
       percentRecebidos,
     };
   }, [itens]);
 
+  const handleSelectAba = (aba: AbaProjetoCompras) => {
+    setAbaAtiva(aba);
+    setStatusFilter('todos');
+    setSomenteAtrasados(false);
+    setSelectedIds(new Set());
+  };
+
   // Itens filtrados
   const filteredItens = useMemo(() => {
     return itens.filter((i) => {
+      if (abaAtiva === 'pendentes') {
+        if (i.status !== 'a_solicitar' && i.status !== 'solicitado' && i.status !== 'comprado') {
+          return false;
+        }
+      } else if (abaAtiva === 'recebidos') {
+        if (i.status !== 'recebido' && i.status !== 'atendido_estoque') {
+          return false;
+        }
+      } else if (abaAtiva === 'cancelados') {
+        if (i.status !== 'cancelado') {
+          return false;
+        }
+      }
+
       if (search) {
         const q = search.toLowerCase();
         const matchDesc = i.descricao.toLowerCase().includes(q);
@@ -156,7 +213,8 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
         const matchComp = i.componente?.nome?.toLowerCase().includes(q) || i.componente?.codigo?.toLowerCase().includes(q);
         const matchForn = i.fornecedor?.nome?.toLowerCase().includes(q);
         const matchLista = i.numero_lista?.toLowerCase().includes(q);
-        if (!matchDesc && !matchSpec && !matchComp && !matchForn && !matchLista) return false;
+        const matchNf = i.nota_fiscal?.toLowerCase().includes(q);
+        if (!matchDesc && !matchSpec && !matchComp && !matchForn && !matchLista && !matchNf) return false;
       }
 
       if (statusFilter !== 'todos' && i.status !== statusFilter) return false;
@@ -165,7 +223,7 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
 
       return true;
     });
-  }, [itens, search, statusFilter, tipoFilter, somenteAtrasados]);
+  }, [itens, abaAtiva, search, statusFilter, tipoFilter, somenteAtrasados]);
 
   // Handlers de seleção
   const toggleSelectAll = () => {
@@ -340,6 +398,38 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
     }
   };
 
+  const handleConfirmEstorno = async () => {
+    if (!itemParaEstornar) return;
+    setIsEstornando(true);
+    setErroEstorno(null);
+    try {
+      await estoqueService.estornarRecebimentoItemCompra(
+        itemParaEstornar.id,
+        {
+          id: user?.id || 'sistema',
+          nome: user?.nome || 'Administrador',
+          perfil: user?.perfil || 'admin',
+        },
+        undefined,
+        motivoEstorno.trim() || undefined
+      );
+      setFeedback({
+        type: 'success',
+        message: `Recebimento de "${itemParaEstornar.descricao}" estornado com sucesso!`,
+      });
+      setItemParaEstornar(null);
+      setMotivoEstorno('');
+      await loadData();
+      if (onRefresh) onRefresh();
+    } catch (err: any) {
+      const msg = err?.message || 'Erro ao estornar recebimento.';
+      setErroEstorno(msg);
+      setFeedback({ type: 'error', message: msg });
+    } finally {
+      setIsEstornando(false);
+    }
+  };
+
   const statusBadgeStyle = (status: StatusItemCompra) => {
     switch (status) {
       case 'a_solicitar':
@@ -480,42 +570,146 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
 
         {/* Cards de Contagem do Projeto */}
         <div className="mt-5 grid grid-cols-2 sm:grid-cols-6 gap-3 text-xs">
-          <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
-            <span className="block text-[11px] font-bold text-slate-500 uppercase">Total Itens</span>
-            <span className="font-mono text-xl font-bold text-slate-900 mt-0.5 block">{resumo.total}</span>
+          <div
+            onClick={() => handleSelectAba('pendentes')}
+            className="cursor-pointer rounded-xl border border-slate-200 bg-slate-50/70 p-3 hover:border-slate-300"
+          >
+            <span className="block text-[11px] font-bold text-slate-500 uppercase">Pendentes</span>
+            <span className="font-mono text-xl font-bold text-slate-900 mt-0.5 block">{resumo.pendentes}</span>
           </div>
 
-          <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+          <div
+            onClick={() => {
+              setAbaAtiva('pendentes');
+              setStatusFilter('a_solicitar');
+            }}
+            className="cursor-pointer rounded-xl border border-slate-100 bg-slate-50/70 p-3 hover:border-slate-300"
+          >
             <span className="block text-[11px] font-bold text-slate-500 uppercase">A Solicitar</span>
             <span className="font-mono text-xl font-bold text-slate-700 mt-0.5 block">{resumo.a_solicitar}</span>
           </div>
 
-          <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-3">
+          <div
+            onClick={() => {
+              setAbaAtiva('pendentes');
+              setStatusFilter('solicitado');
+            }}
+            className="cursor-pointer rounded-xl border border-blue-100 bg-blue-50/50 p-3 hover:border-blue-300"
+          >
             <span className="block text-[11px] font-bold text-blue-900 uppercase">Solicitados</span>
             <span className="font-mono text-xl font-bold text-blue-950 mt-0.5 block">{resumo.solicitados}</span>
           </div>
 
-          <div className="rounded-xl border border-purple-100 bg-purple-50/50 p-3">
+          <div
+            onClick={() => {
+              setAbaAtiva('pendentes');
+              setStatusFilter('comprado');
+            }}
+            className="cursor-pointer rounded-xl border border-purple-100 bg-purple-50/50 p-3 hover:border-purple-300"
+          >
             <span className="block text-[11px] font-bold text-purple-900 uppercase">Comprados</span>
             <span className="font-mono text-xl font-bold text-purple-950 mt-0.5 block">{resumo.comprados}</span>
           </div>
 
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+          <div
+            onClick={() => handleSelectAba('recebidos')}
+            className="cursor-pointer rounded-xl border border-emerald-100 bg-emerald-50/50 p-3 hover:border-emerald-300"
+          >
             <span className="block text-[11px] font-bold text-emerald-800 uppercase">Recebidos</span>
             <span className="font-mono text-xl font-bold text-emerald-950 mt-0.5 block">{resumo.recebidos}</span>
           </div>
 
-          <div className={`rounded-xl border p-3 ${
-            resumo.atrasados > 0
-              ? 'border-rose-200 bg-rose-50 text-rose-900 font-bold'
-              : 'border-slate-100 bg-slate-50/70 text-slate-500'
-          }`}>
+          <div
+            onClick={() => {
+              setAbaAtiva('pendentes');
+              setSomenteAtrasados(true);
+            }}
+            className={`cursor-pointer rounded-xl border p-3 ${
+              resumo.atrasados > 0
+                ? 'border-rose-200 bg-rose-50 text-rose-900 font-bold'
+                : 'border-slate-100 bg-slate-50/70 text-slate-500'
+            }`}
+          >
             <span className="block text-[11px] uppercase">Atrasados</span>
             <span className="font-mono text-xl font-bold mt-0.5 block">
               {resumo.atrasados}
             </span>
           </div>
         </div>
+      </div>
+
+      {/* =========================================================================
+          ABAS DO PROJETO: PENDENTES (PADRÃO) | RECEBIDOS | CANCELADOS | TODOS
+      ========================================================================= */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-2">
+        <button
+          type="button"
+          onClick={() => handleSelectAba('pendentes')}
+          className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl transition-colors ${
+            abaAtiva === 'pendentes' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span>Pendentes</span>
+          <span
+            className={`px-1.5 py-0.2 text-[10px] rounded-full ${
+              abaAtiva === 'pendentes' ? 'bg-amber-400 text-slate-950' : 'bg-slate-200 text-slate-700'
+            }`}
+          >
+            {resumo.pendentes}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectAba('recebidos')}
+          className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl transition-colors ${
+            abaAtiva === 'recebidos' ? 'bg-emerald-700 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          <span>Recebidos</span>
+          <span
+            className={`px-1.5 py-0.2 text-[10px] rounded-full ${
+              abaAtiva === 'recebidos' ? 'bg-emerald-900 text-emerald-100' : 'bg-emerald-100 text-emerald-800'
+            }`}
+          >
+            {resumo.recebidos}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectAba('cancelados')}
+          className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl transition-colors ${
+            abaAtiva === 'cancelados' ? 'bg-rose-700 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span>Cancelados</span>
+          <span
+            className={`px-1.5 py-0.2 text-[10px] rounded-full ${
+              abaAtiva === 'cancelados' ? 'bg-rose-900 text-rose-100' : 'bg-slate-200 text-slate-700'
+            }`}
+          >
+            {resumo.cancelados}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectAba('todos')}
+          className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl transition-colors ${
+            abaAtiva === 'todos' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span>Todos</span>
+          <span
+            className={`px-1.5 py-0.2 text-[10px] rounded-full ${
+              abaAtiva === 'todos' ? 'bg-slate-700 text-slate-200' : 'bg-slate-200 text-slate-700'
+            }`}
+          >
+            {resumo.totalGeral}
+          </span>
+        </button>
       </div>
 
       {/* =========================================================================
@@ -603,21 +797,7 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
                     <ShoppingBag className="h-3 w-3" />
                     <span>Marcar como Comprado</span>
                   </button>
-                </>
-              )}
 
-              {/* Líder também tem permissão para registrar "recebido" */}
-              <button
-                type="button"
-                onClick={() => setBatchActionType('recebido')}
-                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-2xs"
-              >
-                <CheckCircle2 className="h-3 w-3" />
-                <span>Marcar como Recebido</span>
-              </button>
-
-              {canEdit && (
-                <>
                   <button
                     type="button"
                     onClick={() => setBatchActionType('fornecedor')}
@@ -693,13 +873,27 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
                   <th className="py-2.5 px-3 w-36">Fornecedor</th>
                   <th className="py-2.5 px-3 w-20 text-center">Lista</th>
                   <th className="py-2.5 px-3 w-28 text-center">Status</th>
-                  <th className="py-2.5 px-3 w-28 text-center">Previsão</th>
-                  <th className="py-2.5 px-3 w-12 text-center">Ações</th>
+                  <th className="py-2.5 px-3 w-32 text-center">
+                    {abaAtiva === 'recebidos' ? 'Recebimento / NF' : 'Previsão'}
+                  </th>
+                  <th className="py-2.5 px-3 w-36 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredItens.map((item) => {
                   const isSelected = selectedIds.has(item.id);
+                  const isParcial = isRecebimentoParcial(item);
+                  const qtdRecebida = getQuantidadeRecebidaItem(item);
+                  const qtdPendente = getQuantidadePendenteItem(item);
+                  const podeReceberAgora =
+                    canReceber &&
+                    (item.status === 'a_solicitar' ||
+                      item.status === 'solicitado' ||
+                      item.status === 'comprado') &&
+                    qtdPendente > 0;
+                  const podeExibirEstorno =
+                    canEdit && (item.status === 'recebido' || isParcial);
+
                   return (
                     <tr
                       key={item.id}
@@ -747,17 +941,52 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
                         </span>
                       </td>
 
-                      {/* Descrição / Especificação */}
+                      {/* Descrição / Especificação / Rastro */}
                       <td className="py-2.5 px-3">
                         <div className="font-semibold text-slate-900">{item.descricao}</div>
                         <div className="font-mono text-[11px] text-slate-600 line-clamp-1" title={item.especificacao}>
                           {item.especificacao}
                         </div>
+                        {(item.status === 'recebido' || item.status === 'atendido_estoque' || isParcial) && (
+                          <div
+                            className="mt-1 flex flex-wrap items-center gap-1.5"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {item.item_estoque_id && (
+                              <button
+                                type="button"
+                                onClick={() => navigateToEstoqueItem(item.item_estoque_id!)}
+                                className="inline-flex items-center gap-1 rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 text-[10px] font-bold text-emerald-800 hover:bg-emerald-100"
+                                title="Abrir item no módulo Estoque"
+                              >
+                                <ExternalLink className="h-2.5 w-2.5" />
+                                <span>
+                                  Entrou no estoque
+                                  {item.item_estoque?.codigo ? ` (${item.item_estoque.codigo})` : ''}
+                                </span>
+                              </button>
+                            )}
+                            {item.etiquetas_criadas && item.etiquetas_criadas.length > 0 && (
+                              <span className="inline-flex items-center gap-1 font-mono text-[10px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.2">
+                                <Tag className="h-2.5 w-2.5 text-slate-500" />
+                                {item.etiquetas_criadas.slice(0, 3).join(', ')}
+                                {item.etiquetas_criadas.length > 3 ? ` +${item.etiquetas_criadas.length - 3}` : ''}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Quantidade e Unidade */}
                       <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-900">
-                        {item.quantidade} <span className="text-[10px] uppercase font-normal text-slate-500">{item.unidade}</span>
+                        <div>
+                          {item.quantidade} <span className="text-[10px] uppercase font-normal text-slate-500">{item.unidade}</span>
+                        </div>
+                        {isParcial && (
+                          <div className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded px-1 mt-0.5 whitespace-nowrap">
+                            Recebido {qtdRecebida} de {item.quantidade}
+                          </div>
+                        )}
                       </td>
 
                       {/* Fornecedor */}
@@ -785,11 +1014,25 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
                         >
                           {statusLabel(item.status)}
                         </span>
+                        {isParcial && (
+                          <span className="block text-[9px] font-bold text-amber-700 mt-0.5">
+                            Falta {qtdPendente} {item.unidade}
+                          </span>
+                        )}
                       </td>
 
-                      {/* Previsão de Entrega & Atraso */}
+                      {/* Previsão / Recebimento & NF */}
                       <td className="py-2.5 px-3 text-center font-mono">
-                        {item.previsao_entrega ? (
+                        {item.status === 'recebido' || item.status === 'atendido_estoque' ? (
+                          <div className="space-y-0.5">
+                            <span className="block text-emerald-800 font-bold">
+                              {item.data_recebimento ? formatDateBR(item.data_recebimento) : '—'}
+                            </span>
+                            {item.nota_fiscal && (
+                              <span className="block text-[10px] text-slate-600">NF {item.nota_fiscal}</span>
+                            )}
+                          </div>
+                        ) : item.previsao_entrega ? (
                           <div>
                             <span className={item.atrasado ? 'font-bold text-rose-700' : 'text-slate-800'}>
                               {formatDateBR(item.previsao_entrega)}
@@ -806,19 +1049,56 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
                       </td>
 
                       {/* Ações Rápidas */}
-                      <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                        {canEdit ? (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenDeleteSingle(item)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
-                            title="Excluir necessidade de compra"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
+                      <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="inline-flex items-center justify-end gap-1">
+                          {podeReceberAgora && (
+                            <button
+                              type="button"
+                              onClick={() => setItemParaReceber(item)}
+                              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-700 shadow-2xs"
+                              title="Registrar recebimento com entrada no estoque"
+                            >
+                              <PackagePlus className="h-3.5 w-3.5" />
+                              <span>Receber</span>
+                            </button>
+                          )}
+
+                          {podeExibirEstorno && (
+                            <button
+                              type="button"
+                              disabled={!item.pode_estornar}
+                              onClick={() => {
+                                setErroEstorno(null);
+                                setMotivoEstorno('');
+                                setItemParaEstornar(item);
+                              }}
+                              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                                item.pode_estornar
+                                  ? 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                                  : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'
+                              }`}
+                              title={
+                                item.pode_estornar
+                                  ? 'Estornar recebimento e gerar movimentos inversos no estoque'
+                                  : item.motivo_bloqueio_estorno || 'Estorno indisponível'
+                              }
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              <span>Estornar</span>
+                            </button>
+                          )}
+
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeleteSingle(item)}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
+                              title="Excluir necessidade de compra"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -882,6 +1162,89 @@ export const ProjetoComprasTab: React.FC<ProjetoComprasTabProps> = ({
         entityTypeLabel={deleteConfirmState.isBatch ? 'Itens de Compra' : 'Necessidade de Compra'}
         isDeleting={isDeleting}
       />
+
+      {/* MODAL 5: RECEBIMENTO COM ENTRADA ATÔMICA NO ESTOQUE */}
+      <DarEntradaRecebimentoModal
+        isOpen={Boolean(itemParaReceber)}
+        onClose={() => setItemParaReceber(null)}
+        itemCompra={itemParaReceber}
+        itensEstoque={itensEstoque}
+        onSuccess={(msg) => {
+          setFeedback({ type: 'success', message: msg });
+          setItemParaReceber(null);
+          loadData();
+          if (onRefresh) onRefresh();
+        }}
+      />
+
+      {/* MODAL 6: CONFIRMAÇÃO DE ESTORNO DE RECEBIMENTO */}
+      <Modal
+        isOpen={Boolean(itemParaEstornar)}
+        onClose={() => {
+          if (!isEstornando) {
+            setItemParaEstornar(null);
+            setErroEstorno(null);
+          }
+        }}
+        title="Estornar Recebimento"
+        subtitle="Gera movimentos inversos no estoque e restaura o item para a lista de pendentes"
+        maxWidth="md"
+      >
+        {itemParaEstornar && (
+          <div className="space-y-4 text-xs">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950 space-y-1">
+              <p className="font-bold">Item: {itemParaEstornar.descricao}</p>
+              <p className="text-amber-800">
+                Esta ação criará lançamentos inversos no estoque, descartará peças físicas ainda não
+                consumidas e cancelará reservas ligadas a este recebimento.
+              </p>
+            </div>
+
+            {erroEstorno && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-800 font-semibold flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                <span>{erroEstorno}</span>
+              </div>
+            )}
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Motivo do estorno (opcional)
+              </label>
+              <input
+                type="text"
+                value={motivoEstorno}
+                onChange={(e) => setMotivoEstorno(e.target.value)}
+                placeholder="Ex: Lançamento incorreto de nota fiscal ou quantidade"
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isEstornando}
+                onClick={() => {
+                  setItemParaEstornar(null);
+                  setErroEstorno(null);
+                }}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isEstornando}
+                onClick={handleConfirmEstorno}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-4 py-2 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>{isEstornando ? 'Estornando...' : 'Confirmar Estorno'}</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

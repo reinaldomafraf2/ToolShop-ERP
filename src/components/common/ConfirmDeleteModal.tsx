@@ -10,6 +10,8 @@ interface ConfirmDeleteModalProps {
   itemName: string;
   entityTypeLabel: string;
   blockedReason?: string | null;
+  warningDetails?: string | null;
+  errorMessage?: string | null;
   isDeleting?: boolean;
 }
 
@@ -21,6 +23,8 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
   itemName,
   entityTypeLabel,
   blockedReason,
+  warningDetails,
+  errorMessage,
   isDeleting,
 }) => {
   const isBlocked = Boolean(blockedReason);
@@ -65,9 +69,15 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
                 <strong className="font-semibold text-slate-900">"{itemName}"</strong>?
               </p>
               <p className="mt-1 text-[11px] text-slate-500">
-                Esta ação removerá o registro do sistema de forma permanente.
+                {warningDetails || 'Esta ação removerá o registro do sistema de forma permanente.'}
               </p>
             </div>
+          </div>
+        )}
+
+        {errorMessage && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-700">
+            {errorMessage}
           </div>
         )}
 

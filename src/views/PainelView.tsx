@@ -91,6 +91,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
     recebidos: number;
     atrasados: any[];
     pecasAguardandoMaterial: any[];
+    recebidosHoje?: any[];
   } | null>(null);
 
   useEffect(() => {
@@ -1018,9 +1019,9 @@ export const PainelView: React.FC<PainelViewProps> = ({
       </div>
 
       {/* ========================================================================= */}
-      {/* 4. COMPRAS E MATERIAIS: COMPRAS PENDENTES & PEÇAS AGUARDANDO MATERIAL     */}
+      {/* 4. COMPRAS E MATERIAIS: PENDENTES, AGUARDANDO MATERIAL & RECEBIDOS HOJE   */}
       {/* ========================================================================= */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Card 1: Compras Pendentes */}
         <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
           <div>
@@ -1034,7 +1035,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
                     Compras Pendentes
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Visão geral dos pedidos e entregas de matéria-prima e componentes
+                    Pedidos e entregas abertas
                   </p>
                 </div>
               </div>
@@ -1048,8 +1049,8 @@ export const PainelView: React.FC<PainelViewProps> = ({
             </div>
 
             {/* Contadores por status */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 my-4">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-center">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 my-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-center">
                 <span className="block text-[10px] font-semibold text-slate-500 uppercase">
                   A Solicitar
                 </span>
@@ -1057,7 +1058,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
                   {resumoCompras?.a_solicitar ?? 0}
                 </span>
               </div>
-              <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-2.5 text-center">
+              <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-2 text-center">
                 <span className="block text-[10px] font-semibold text-blue-700 uppercase">
                   Solicitados
                 </span>
@@ -1065,7 +1066,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
                   {resumoCompras?.solicitados ?? 0}
                 </span>
               </div>
-              <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-2.5 text-center">
+              <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-2 text-center">
                 <span className="block text-[10px] font-semibold text-amber-800 uppercase">
                   Comprados
                 </span>
@@ -1073,7 +1074,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
                   {resumoCompras?.comprados ?? 0}
                 </span>
               </div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-2.5 text-center">
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-2 text-center">
                 <span className="block text-[10px] font-semibold text-emerald-700 uppercase">
                   Recebidos
                 </span>
@@ -1129,7 +1130,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
 
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
             <span className="text-xs text-slate-500 font-mono">
-              Total de {resumoCompras?.total ?? 0} item(ns) registrados
+              Total de {resumoCompras?.total ?? 0} item(ns)
             </span>
             <button
               type="button"
@@ -1142,7 +1143,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
           </div>
         </div>
 
-        {/* Card 2: Peças Aguardando Material */}
+        {/* Card 2: Aguardando Material */}
         <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
           <div>
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -1152,16 +1153,16 @@ export const PainelView: React.FC<PainelViewProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">
-                    Peças Aguardando Material
+                    Aguardando material
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Peças fabricadas com operações cujo material bruto não foi recebido
+                    Componentes com operações pendentes sem material recebido
                   </p>
                 </div>
               </div>
 
               <span className="rounded-full bg-slate-100 border border-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 font-mono">
-                {resumoCompras?.pecasAguardandoMaterial.length || 0} peça(s)
+                {resumoCompras?.pecasAguardandoMaterial.length || 0}
               </span>
             </div>
 
@@ -1170,7 +1171,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
               {(resumoCompras?.pecasAguardandoMaterial.length || 0) === 0 ? (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 flex items-center gap-2 text-xs text-emerald-800">
                   <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                  <span>Todas as peças com roteiro já tiveram seu material recebido.</span>
+                  <span>Todos os componentes com roteiro pendente já tiveram material recebido.</span>
                 </div>
               ) : (
                 <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
@@ -1195,9 +1196,9 @@ export const PainelView: React.FC<PainelViewProps> = ({
                       </div>
 
                       <div className="text-right shrink-0 flex flex-col items-end gap-1">
-                        {peca.statusMaterial === 'pendente_geracao' ? (
-                          <span className="inline-block rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-                            Não gerado
+                        {peca.statusMaterial === 'parcial' ? (
+                          <span className="inline-block rounded border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                            Parcial
                           </span>
                         ) : peca.statusMaterial === 'comprado' ? (
                           <span className="inline-block rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
@@ -1209,7 +1210,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
                           </span>
                         ) : (
                           <span className="inline-block rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
-                            A solicitar
+                            Pendente
                           </span>
                         )}
                         <span className="text-[10px] font-mono text-slate-400">
@@ -1225,7 +1226,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
 
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
             <span className="text-xs text-slate-500">
-              Acompanhe a chegada dos materiais antes de liberar usinagem
+              Liberação automática após recebimento
             </span>
             <button
               type="button"
@@ -1233,6 +1234,79 @@ export const PainelView: React.FC<PainelViewProps> = ({
               className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-900"
             >
               <span>Ver Projetos</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Card 3: Recebidos Hoje */}
+        <div className="flex flex-col justify-between rounded-2xl border border-emerald-200 bg-emerald-50/20 p-5 shadow-2xs">
+          <div>
+            <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                  <Package className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Recebidos hoje
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Materiais lançados no estoque hoje
+                  </p>
+                </div>
+              </div>
+
+              <span className="rounded-full bg-emerald-100 border border-emerald-200 px-2.5 py-0.5 text-xs font-bold text-emerald-900 font-mono">
+                {resumoCompras?.recebidosHoje?.length || 0}
+              </span>
+            </div>
+
+            <div className="mt-4">
+              {(resumoCompras?.recebidosHoje?.length || 0) === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-white p-4 text-center text-xs text-slate-500">
+                  Nenhum recebimento registrado na data de hoje.
+                </div>
+              ) : (
+                <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                  {resumoCompras?.recebidosHoje?.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-xl border border-emerald-200 bg-white p-2.5 text-xs space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-900 truncate">
+                          {item.descricao}
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-emerald-800 shrink-0">
+                          {item.quantidade_recebida ?? item.quantidade} {item.unidade}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                        <span>
+                          {item.projeto?.codigo ? `O.S. ${item.projeto.codigo}` : 'Reposição / Geral'}
+                        </span>
+                        <span>
+                          {item.nota_fiscal ? `NF ${item.nota_fiscal}` : 'Sem NF'}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-emerald-100 flex items-center justify-between">
+            <span className="text-xs text-emerald-800 font-medium">
+              Integrado com Estoque e Produção
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('compras')}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-800 hover:text-emerald-950"
+            >
+              <span>Ver Recebidos</span>
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>

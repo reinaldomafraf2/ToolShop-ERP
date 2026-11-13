@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Fornecedor, StatusItemCompra } from '../../types';
 import { Modal } from '../common/Modal';
-import { Clock, CheckCircle2, ShoppingBag, Truck, Building2 } from 'lucide-react';
+import { Clock, ShoppingBag, Building2 } from 'lucide-react';
 
-export type TipoBatchAction = 'solicitado' | 'comprado' | 'recebido' | 'fornecedor';
+export type TipoBatchAction = 'solicitado' | 'comprado' | 'fornecedor';
 
 interface BatchActionModalProps {
   isOpen: boolean;
@@ -16,8 +16,6 @@ interface BatchActionModalProps {
     fornecedorId?: string;
     numero_pedido?: string;
     previsao_entrega?: string;
-    data_recebimento?: string;
-    nota_fiscal?: string;
   }) => Promise<void>;
 }
 
@@ -31,10 +29,6 @@ export const BatchActionModal: React.FC<BatchActionModalProps> = ({
 }) => {
   const [numeroPedido, setNumeroPedido] = useState('');
   const [previsaoEntrega, setPrevisaoEntrega] = useState('');
-  const [dataRecebimento, setDataRecebimento] = useState(
-    () => new Date().toISOString().split('T')[0]
-  );
-  const [notaFiscal, setNotaFiscal] = useState('');
   const [fornecedorId, setFornecedorId] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -54,12 +48,6 @@ export const BatchActionModal: React.FC<BatchActionModalProps> = ({
           status: 'comprado',
           numero_pedido: numeroPedido.trim() || undefined,
           previsao_entrega: previsaoEntrega || undefined,
-        });
-      } else if (tipo === 'recebido') {
-        await onConfirm({
-          status: 'recebido',
-          data_recebimento: dataRecebimento || undefined,
-          nota_fiscal: notaFiscal.trim() || undefined,
         });
       } else if (tipo === 'fornecedor') {
         await onConfirm({
@@ -84,11 +72,6 @@ export const BatchActionModal: React.FC<BatchActionModalProps> = ({
       title: 'Marcar como Comprado',
       subtitle: `Registrar a compra e prazo de entrega para ${selectedCount} item(ns)`,
       icon: ShoppingBag,
-    },
-    recebido: {
-      title: 'Marcar como Recebido',
-      subtitle: `Confirmar o recebimento físico e nota fiscal de ${selectedCount} item(ns)`,
-      icon: CheckCircle2,
     },
     fornecedor: {
       title: 'Alterar Fornecedor em Lote',
@@ -144,35 +127,6 @@ export const BatchActionModal: React.FC<BatchActionModalProps> = ({
                 type="date"
                 value={previsaoEntrega}
                 onChange={(e) => setPrevisaoEntrega(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-3.5 py-2 font-mono text-xs text-slate-900 focus:outline-none focus:border-slate-900"
-              />
-            </div>
-          </div>
-        )}
-
-        {tipo === 'recebido' && (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Data do Recebimento Físico
-              </label>
-              <input
-                type="date"
-                value={dataRecebimento}
-                onChange={(e) => setDataRecebimento(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-3.5 py-2 font-mono text-xs text-slate-900 focus:outline-none focus:border-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Número da Nota Fiscal (NF-e)
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: NF 98234"
-                value={notaFiscal}
-                onChange={(e) => setNotaFiscal(e.target.value)}
                 className="w-full rounded-xl border border-slate-300 px-3.5 py-2 font-mono text-xs text-slate-900 focus:outline-none focus:border-slate-900"
               />
             </div>

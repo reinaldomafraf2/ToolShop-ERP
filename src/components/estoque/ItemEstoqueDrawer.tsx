@@ -409,6 +409,18 @@ export const ItemEstoqueDrawer: React.FC<ItemEstoqueDrawerProps> = ({
                           Por {m.usuario_nome || 'Usuário'} {m.projeto_codigo ? `· O.S. ${m.projeto_codigo}` : ''}{' '}
                           {m.componente_nome ? `· ${m.componente_nome}` : ''}
                         </span>
+                        {(m.item_compra_id || m.numero_pedido || m.nota_fiscal || m.fornecedor_nome) && (
+                          <span className="text-[10px] font-mono text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 inline-block mt-0.5">
+                            {[
+                              'Origem: Compra',
+                              m.numero_pedido ? `Ped. ${m.numero_pedido}` : null,
+                              m.nota_fiscal ? `NF ${m.nota_fiscal}` : null,
+                              m.fornecedor_nome ? m.fornecedor_nome : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </span>
+                        )}
                         {m.observacoes && (
                           <span className="text-[11px] text-slate-600 italic block">
                             "{m.observacoes}"
@@ -510,7 +522,20 @@ export const ItemEstoqueDrawer: React.FC<ItemEstoqueDrawerProps> = ({
 
                         <span className="text-[10px] text-slate-400 block">
                           Local: {u.localizacao || 'Almoxarifado'}
+                          {u.lote_ou_certificado ? ` · Cert/Lote: ${u.lote_ou_certificado}` : ''}
                         </span>
+                        {(u.numero_pedido || u.nota_fiscal || u.origem_projeto_codigo) && (
+                          <span className="text-[10px] font-mono text-slate-600 block">
+                            {[
+                              u.origem === 'sobra' ? 'Sobra' : 'Compra',
+                              u.numero_pedido ? `Ped. ${u.numero_pedido}` : null,
+                              u.nota_fiscal ? `NF ${u.nota_fiscal}` : null,
+                              u.origem_projeto_codigo ? `O.S. ${u.origem_projeto_codigo}` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-1.5">

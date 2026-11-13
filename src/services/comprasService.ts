@@ -6,6 +6,10 @@ import {
   TipoItemCompra,
   ProjetoComDetalhes,
   ComponenteComOperacoes,
+  ItemEstoque,
+  UnidadeEstoque,
+  MovimentoEstoque,
+  ReservaEstoque,
 } from '../types';
 import {
   fornecedorRepository,
@@ -13,8 +17,15 @@ import {
   FirestoreFornecedorRepository,
   FirestoreItemCompraRepository,
 } from '../repositories/comprasRepository';
+import {
+  FirestoreItemEstoqueRepository,
+  FirestoreUnidadeEstoqueRepository,
+  FirestoreMovimentoEstoqueRepository,
+  FirestoreReservaEstoqueRepository,
+} from '../repositories/estoqueRepository';
 import { toolShopService } from './toolShopService';
 import { normalizeString } from '../utils/excelImport';
+import { isMaterialLiberadoParaProducao } from '../utils/materialStatus';
 import { DEFAULT_EMPRESA_ID } from '../utils/uuid';
 import { cleanFirestoreData } from '../firebase/config';
 
@@ -117,16 +128,29 @@ export class ComprasService {
     empresaId: string = DEFAULT_EMPRESA_ID,
     projetoId?: string
   ): Promise<ItemCompraComDetalhes[]> {
-    const [itens, projetos, fornecedores] = await Promise.all([
-      projetoId
-        ? this.itensCompraRepo.getByProjetoId(projetoId, empresaId)
-        : this.itensCompraRepo.getAll(empresaId),
-      toolShopService.getProjetosComDetalhes(empresaId),
-      this.getFornecedores(empresaId),
-    ]);
+    const itemEstRepo = new FirestoreItemEstoqueRepository();
+    const unidadeEstRepo = new FirestoreUnidadeEstoqueRepository();
+    const movEstRepo = new FirestoreMovimentoEstoqueRepository();
+    const resEstRepo = new FirestoreReservaEstoqueRepository();
+
+    const [itens, projetos, fornecedores, itensEstoque, unidadesEstoque, movimentosEstoque, reservasEstoque] =
+      await Promise.all([
+        projetoId
+          ? this.itensCompraRepo.getByProjetoId(projetoId, empresaId)
+          : this.itensCompraRepo.getAll(empresaId),
+        toolShopService.getProjetosComDetalhes(empresaId),
+        this.getFornecedores(empresaId),
+        itemEstRepo.getAll(empresaId).catch(() => [] as ItemEstoque[]),
+        unidadeEstRepo.getAll(empresaId).catch(() => [] as UnidadeEstoque[]),
+        movEstRepo.getAll(empresaId).catch(() => [] as MovimentoEstoque[]),
+        resEstRepo.getAll(empresaId).catch(() => [] as ReservaEstoque[]),
+      ]);
 
     const projetosMap = new Map(projetos.map((p) => [p.id, p]));
     const fornecedoresMap = new Map(fornecedores.map((f) => [f.id, f]));
+    const itemEstoqueMap = new Map(itensEstoque.map((e) => [e.id, e]));
+    const unidadesMap = new Map(unidadesEstoque.map((u) => [u.id, u]));
+    const reservasMap = new Map(reservasEstoque.map((r) => [r.id, r]));
 
     // Mapa de componentes para lookup rápido
     const componentesMap = new Map<string, any>();
@@ -142,6 +166,7 @@ export class ComprasService {
       const proj = item.projeto_id ? projetosMap.get(item.projeto_id) : undefined;
       const comp = item.componente_id ? componentesMap.get(item.componente_id) : undefined;
       const forn = item.fornecedor_id ? fornecedoresMap.get(item.fornecedor_id) : undefined;
+      const itemEst = item.item_estoque_id ? itemEstoqueMap.get(item.item_estoque_id) : undefined;
 
       // Cálculo de atraso: previsão_entrega passada e status diferente de recebido, cancelado ou atendido_estoque
       let atrasado = false;
@@ -163,11 +188,82 @@ export class ComprasService {
         }
       }
 
+      // Etiquetas e elegibilidade de estorno
+      const historicoAtivo = (item.historico_recebimentos || []).filter((r) => !r.estornado);
+      const unidadeIds = new Set<string>();
+      historicoAtivo.forEach((r) => (r.unidade_ids || []).forEach((id) => unidadeIds.add(id)));
+      unidadesEstoque
+        .filter((u) => u.origem_item_compra_id === item.id && u.status !== 'descartada')
+        .forEach((u) => unidadeIds.add(u.id));
+
+      const etiquetasSet = new Set<string>(item.etiquetas_criadas || []);
+      unidadeIds.forEach((id) => {
+        const u = unidadesMap.get(id);
+        if (u && u.status !== 'descartada') {
+          etiquetasSet.add(u.etiqueta);
+        }
+      });
+
+      const temRecebimento =
+        (item.status === 'recebido' || (item.quantidade_recebida || 0) > 0) &&
+        (Boolean(item.movimento_entrada_id) || historicoAtivo.length > 0);
+
+      let podeEstornar = false;
+      let motivoBloqueioEstorno: string | undefined;
+
+      if (temRecebimento) {
+        const unidadesVinc = Array.from(unidadeIds)
+          .map((id) => unidadesMap.get(id))
+          .filter(Boolean) as UnidadeEstoque[];
+        const unidadeConsumida = unidadesVinc.find((u) => u.status === 'consumida');
+
+        const reservaIds = new Set<string>();
+        historicoAtivo.forEach((r) => (r.reserva_ids || []).forEach((id) => reservaIds.add(id)));
+        const reservaConsumida = Array.from(reservaIds)
+          .map((id) => reservasMap.get(id))
+          .find((r) => r && r.status === 'consumida');
+
+        const movProdUnidade = movimentosEstoque.find(
+          (m) =>
+            m.tipo === 'saida' &&
+            m.motivo === 'producao' &&
+            m.unidade_id &&
+            unidadeIds.has(m.unidade_id)
+        );
+
+        let saidaProdQtd = false;
+        if (item.componente_id && item.item_estoque_id && unidadesVinc.length === 0) {
+          const movEntrada = movimentosEstoque.find(
+            (m) => m.item_compra_id === item.id || m.id === item.movimento_entrada_id
+          );
+          const entradaMs = movEntrada ? new Date(movEntrada.data_hora).getTime() : 0;
+          saidaProdQtd = movimentosEstoque.some(
+            (m) =>
+              m.tipo === 'saida' &&
+              m.motivo === 'producao' &&
+              m.item_id === item.item_estoque_id &&
+              m.componente_id === item.componente_id &&
+              new Date(m.data_hora).getTime() >= entradaMs
+          );
+        }
+
+        if (unidadeConsumida || reservaConsumida || movProdUnidade || saidaProdQtd) {
+          podeEstornar = false;
+          motivoBloqueioEstorno = 'Material já foi retirado para produção.';
+        } else {
+          podeEstornar = true;
+        }
+      }
+
       return {
         ...item,
         projeto: proj,
         componente: comp,
         fornecedor: forn,
+        item_estoque: itemEst,
+        etiquetas_criadas: Array.from(etiquetasSet),
+        pode_estornar: podeEstornar,
+        motivo_bloqueio_estorno: motivoBloqueioEstorno,
         atrasado,
         diasAtraso,
       };
@@ -181,19 +277,31 @@ export class ComprasService {
     if (!data.descricao || !data.descricao.trim()) {
       throw new Error('A descrição do item de compra é obrigatória.');
     }
-    if (!data.projeto_id) {
+    if (data.tipo !== 'reposicao' && !data.projeto_id) {
       throw new Error('O projeto de origem é obrigatório.');
     }
     if (!data.quantidade || data.quantidade <= 0) {
       throw new Error('A quantidade deve ser maior que zero.');
     }
 
+    const statusFinal = data.status || 'a_solicitar';
+    const qtdTotal = Number(data.quantidade);
+    const qtdRecebida =
+      data.quantidade_recebida ?? (statusFinal === 'recebido' ? qtdTotal : 0);
+    const qtdPendente =
+      data.quantidade_pendente ??
+      (statusFinal === 'recebido' || statusFinal === 'atendido_estoque' || statusFinal === 'cancelado'
+        ? 0
+        : Math.max(0, Number((qtdTotal - qtdRecebida).toFixed(4))));
+
     return this.itensCompraRepo.create(
       cleanFirestoreData({
         ...data,
         empresa_id: empresaId,
-        status: data.status || 'a_solicitar',
-        criado_em: new Date().toISOString(),
+        status: statusFinal,
+        quantidade_recebida: qtdRecebida,
+        quantidade_pendente: qtdPendente,
+        criado_em: data.criado_em || new Date().toISOString(),
       })
     );
   }
@@ -229,6 +337,12 @@ export class ComprasService {
       nota_fiscal?: string;
     }
   ): Promise<SnapshotDesfazer[]> {
+    if (novoStatus === 'recebido') {
+      throw new Error(
+        'Para registrar recebimento e entrada no estoque, utilize o botão "Receber" em cada item.'
+      );
+    }
+
     const snapshots: SnapshotDesfazer[] = [];
     const todayStr = new Date().toISOString().split('T')[0];
 
@@ -257,9 +371,6 @@ export class ComprasService {
       } else if (novoStatus === 'comprado') {
         if (extras?.numero_pedido) updates.numero_pedido = extras.numero_pedido;
         if (extras?.previsao_entrega) updates.previsao_entrega = extras.previsao_entrega;
-      } else if (novoStatus === 'recebido') {
-        updates.data_recebimento = extras?.data_recebimento || todayStr;
-        if (extras?.nota_fiscal) updates.nota_fiscal = extras.nota_fiscal;
       }
 
       await this.itensCompraRepo.update(id, updates);
@@ -561,6 +672,7 @@ export class ComprasService {
 
   async getResumoComprasPainel(empresaId: string = DEFAULT_EMPRESA_ID) {
     const itensComDetalhes = await this.getItensCompraComDetalhes(empresaId);
+    const todayStr = new Date().toISOString().split('T')[0];
 
     const total = itensComDetalhes.length;
     const a_solicitar = itensComDetalhes.filter((i) => i.status === 'a_solicitar').length;
@@ -569,39 +681,38 @@ export class ComprasService {
     const recebidos = itensComDetalhes.filter((i) => i.status === 'recebido' || i.status === 'atendido_estoque').length;
     const atrasados = itensComDetalhes.filter((i) => i.atrasado);
 
-    // Peças aguardando material (fabricadas com operações e sem matéria-prima recebida)
+    const recebidosHoje = itensComDetalhes.filter((i) => {
+      const temHistoricoHoje = (i.historico_recebimentos || []).some(
+        (r) => !r.estornado && r.data_recebimento === todayStr
+      );
+      return (
+        temHistoricoHoje ||
+        (i.data_recebimento === todayStr && (i.status === 'recebido' || (i.quantidade_recebida || 0) > 0))
+      );
+    });
+
+    // Componentes com operações pendentes/em andamento e material ainda não recebido/retirado
     const pecasAguardandoMaterial: {
       componente: ComponenteComOperacoes;
       projeto: ProjetoComDetalhes;
-      statusMaterial: StatusItemCompra | 'pendente_geracao';
+      statusMaterial: string;
     }[] = [];
 
     const projetos = await toolShopService.getProjetosComDetalhes(empresaId);
-    const mpPorComponente = new Map<string, ItemCompra>();
-    itensComDetalhes.forEach((it) => {
-      if (it.tipo === 'materia_prima' && it.componente_id) {
-        mpPorComponente.set(it.componente_id, it);
-      }
-    });
 
     for (const proj of projetos) {
       if (proj.status === 'Concluído' || proj.status === 'Cancelado') continue;
       for (const comp of proj.componentes) {
-        if (comp.tipo && comp.tipo !== 'fabricado') continue;
-        if (comp.operacoes.length === 0) continue;
+        const temOperacaoPendente = comp.operacoes.some(
+          (op) => op.status === 'Pendente' || op.status === 'Em andamento'
+        );
+        if (!temOperacaoPendente) continue;
 
-        const mp = mpPorComponente.get(comp.id);
-        if (!mp) {
+        if (!isMaterialLiberadoParaProducao(comp.material_status)) {
           pecasAguardandoMaterial.push({
             componente: comp,
             projeto: proj,
-            statusMaterial: 'pendente_geracao',
-          });
-        } else if (mp.status !== 'recebido' && mp.status !== 'atendido_estoque') {
-          pecasAguardandoMaterial.push({
-            componente: comp,
-            projeto: proj,
-            statusMaterial: mp.status,
+            statusMaterial: comp.material_status || 'pendente',
           });
         }
       }
@@ -613,6 +724,7 @@ export class ComprasService {
       solicitados,
       comprados,
       recebidos,
+      recebidosHoje,
       atrasados,
       pecasAguardandoMaterial,
     };

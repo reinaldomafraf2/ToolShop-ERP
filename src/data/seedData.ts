@@ -32,6 +32,11 @@ export const SEED_CONFIGURACOES: ConfiguracoesSistema = {
   empresa_id: DEFAULT_EMPRESA_ID,
   restringir_postos: true, // Ligada por padrão
   liberar_apenas_proxima_operacao: false, // Desligada por padrão
+  avisar_operador_material_pendente: true,
+  operacoes_sem_material_recebido: 'avisar',
+  categorias_isentas_bloqueio_material: ['Programação'],
+  permitir_saldo_negativo: false,
+  dias_alerta_reserva_parada: 30,
   empresa_nome: 'TOOLSHOP FERRAMENTARIA & USINAGEM LTDA',
   empresa_cnpj: '12.345.678/0001-90',
   empresa_endereco: 'Rua das Indústrias, 1000 - Distrito Industrial - Joinville/SC',

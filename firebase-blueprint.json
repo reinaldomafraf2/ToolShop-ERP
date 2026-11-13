@@ -232,7 +232,7 @@
     },
     "ItemCompra": {
       "title": "ItemCompra",
-      "description": "Necessidade e item de compra de matéria-prima ou componente comercial",
+      "description": "Necessidade e item de compra de matéria-prima, item comercial ou reposição de estoque",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -241,10 +241,14 @@
         "componente_id": { "type": "string" },
         "item_estoque_id": { "type": "string" },
         "movimento_entrada_id": { "type": "string" },
+        "movimento_entrada_ids": { "type": "array", "items": { "type": "string" } },
+        "etiquetas_criadas": { "type": "array", "items": { "type": "string" } },
         "tipo": { "type": "string", "enum": ["materia_prima", "item_comercial", "reposicao"] },
         "descricao": { "type": "string", "maxLength": 250 },
         "especificacao": { "type": "string", "maxLength": 500 },
         "quantidade": { "type": "number" },
+        "quantidade_recebida": { "type": "number" },
+        "quantidade_pendente": { "type": "number" },
         "unidade": { "type": "string", "enum": ["un", "kg", "m", "pç"] },
         "peso_kg": { "type": "number" },
         "fornecedor_id": { "type": "string" },
@@ -262,6 +266,10 @@
         "observacoes": { "type": "string", "maxLength": 1000 },
         "valor_estimado": { "type": "number" },
         "valor_real": { "type": "number" },
+        "historico_recebimentos": { "type": "array", "items": { "type": "object" } },
+        "estornado_em": { "type": "string" },
+        "estornado_por": { "type": "string" },
+        "estorno_movimento_ids": { "type": "array", "items": { "type": "string" } },
         "criado_em": { "type": "string" }
       },
       "required": ["id", "empresa_id", "tipo", "descricao", "quantidade", "unidade", "status"]
@@ -310,6 +318,10 @@
         "origem": { "type": "string", "enum": ["compra", "sobra", "ajuste"] },
         "origem_projeto_id": { "type": "string" },
         "origem_componente_id": { "type": "string" },
+        "origem_item_compra_id": { "type": "string" },
+        "numero_pedido": { "type": "string", "maxLength": 100 },
+        "nota_fiscal": { "type": "string", "maxLength": 100 },
+        "fornecedor_nome": { "type": "string", "maxLength": 200 },
         "status": { "type": "string", "enum": ["disponivel", "reservada", "consumida", "descartada"] },
         "observacoes": { "type": "string", "maxLength": 1000 },
         "criado_em": { "type": "string" }
@@ -333,6 +345,10 @@
         "projeto_id": { "type": "string" },
         "componente_id": { "type": "string" },
         "item_compra_id": { "type": "string" },
+        "numero_pedido": { "type": "string", "maxLength": 100 },
+        "nota_fiscal": { "type": "string", "maxLength": 100 },
+        "fornecedor_nome": { "type": "string", "maxLength": 200 },
+        "movimento_estornado_id": { "type": "string" },
         "motivo": { "type": "string", "enum": ["compra", "producao", "inventario", "perda", "devolucao", "outro"] },
         "custo_unitario": { "type": "number" },
         "custo_total": { "type": "number" },
@@ -356,6 +372,30 @@
         "criado_em": { "type": "string" }
       },
       "required": ["id", "empresa_id", "item_id", "quantidade", "status"]
+    },
+    "ConfiguracoesSistema": {
+      "title": "ConfiguracoesSistema",
+      "description": "Parâmetros operacionais de produção, compras e estoque do ToolShop ERP",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "restringir_postos": { "type": "boolean" },
+        "liberar_apenas_proxima_operacao": { "type": "boolean" },
+        "avisar_operador_material_pendente": { "type": "boolean" },
+        "operacoes_sem_material_recebido": { "type": "string", "enum": ["ignorar", "avisar", "bloquear"] },
+        "categorias_isentas_bloqueio_material": { "type": "array", "items": { "type": "string" } },
+        "permitir_saldo_negativo": { "type": "boolean" },
+        "dias_alerta_reserva_parada": { "type": "number" },
+        "empresa_nome": { "type": "string" },
+        "empresa_cnpj": { "type": "string" },
+        "empresa_endereco": { "type": "string" },
+        "empresa_telefone": { "type": "string" },
+        "empresa_logo": { "type": "string" },
+        "atualizado_por": { "type": "string" },
+        "atualizado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id"]
     }
   },
   "firestore": {
@@ -422,6 +462,10 @@
     "/reservas_estoque/{reservaId}": {
       "schema": { "$ref": "#/entities/ReservaEstoque" },
       "description": "Coleção de reservas ativas e históricas de estoque"
+    },
+    "/configuracoes/{configId}": {
+      "schema": { "$ref": "#/entities/ConfiguracoesSistema" },
+      "description": "Configurações operacionais de produção, compras e estoque"
     }
   }
 }

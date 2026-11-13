@@ -1,6 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { ConfiguracoesSistema, Operador, CentroCusto } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  ConfiguracoesSistema,
+  Operador,
+  CentroCusto,
+  ModoOperacaoSemMaterial,
+  CATEGORIAS_CENTRO_CUSTO_SUGESTO,
+} from '../types';
 import { toolShopService } from '../services/toolShopService';
+import {
+  getModoOperacaoSemMaterial,
+  getCategoriasIsentasBloqueioMaterial,
+} from '../utils/materialStatus';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
 import { ConfirmDeleteModal } from '../components/common/ConfirmDeleteModal';
 import { useAuth } from '../auth/AuthContext';
@@ -168,25 +178,75 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
     }
   };
 
-  const handleToggleAvisarMaterialPendente = async () => {
+  const modoSemMaterial = getModoOperacaoSemMaterial(config);
+  const categoriasIsentas = getCategoriasIsentasBloqueioMaterial(config);
+
+  const todasCategoriasDisponiveis = useMemo(() => {
+    const map = new Map<string, string>();
+    CATEGORIAS_CENTRO_CUSTO_SUGESTO.forEach((cat) => {
+      map.set(cat.trim().toLowerCase(), cat);
+    });
+    centrosCusto.forEach((cc) => {
+      const cat = (cc.categoria || cc.tipo || '').trim();
+      if (cat && !map.has(cat.toLowerCase())) {
+        map.set(cat.toLowerCase(), cat);
+      }
+    });
+    categoriasIsentas.forEach((cat) => {
+      const clean = cat.trim();
+      if (clean && !map.has(clean.toLowerCase())) {
+        map.set(clean.toLowerCase(), clean);
+      }
+    });
+    return Array.from(map.values());
+  }, [centrosCusto, categoriasIsentas]);
+
+  const handleChangeModoSemMaterial = async (novoModo: ModoOperacaoSemMaterial) => {
     if (!config || !canEdit || isSaving) return;
-    const novoValor = !config.avisar_operador_material_pendente;
     setIsSaving(true);
     try {
       const updated = await toolShopService.updateConfiguracoes(
-        { avisar_operador_material_pendente: novoValor },
+        {
+          operacoes_sem_material_recebido: novoModo,
+          avisar_operador_material_pendente: novoModo !== 'ignorar',
+        },
         user?.nome || 'Administrador'
       );
       setConfig(updated);
-      showFeedback(
-        'success',
-        novoValor
-          ? 'Aviso de material pendente ativado. O operador verá um alerta visual na tela de Apontamento quando a matéria-prima ainda não tiver sido recebida.'
-          : 'Aviso de material pendente desativado.'
-      );
+      const labelMsg =
+        novoModo === 'ignorar'
+          ? 'Modo definido como "Ignorar": operações aparecem normalmente sem aviso de material.'
+          : novoModo === 'avisar'
+          ? 'Modo definido como "Avisar": operadores verão alerta visual quando o material não estiver recebido.'
+          : 'Modo definido como "Bloquear início": operações sem material recebido ficam bloqueadas (exceto categorias isentas).';
+      showFeedback('success', labelMsg);
       onRefresh?.();
     } catch (err: any) {
       showFeedback('error', err.message || 'Erro ao salvar configuração.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleToggleCategoriaIsenta = async (categoria: string) => {
+    if (!config || !canEdit || isSaving) return;
+    const norm = categoria.trim().toLowerCase();
+    const exists = categoriasIsentas.some((c) => c.trim().toLowerCase() === norm);
+    const proximas = exists
+      ? categoriasIsentas.filter((c) => c.trim().toLowerCase() !== norm)
+      : [...categoriasIsentas, categoria];
+
+    setIsSaving(true);
+    try {
+      const updated = await toolShopService.updateConfiguracoes(
+        { categorias_isentas_bloqueio_material: proximas },
+        user?.nome || 'Administrador'
+      );
+      setConfig(updated);
+      showFeedback('success', 'Lista de categorias isentas do bloqueio atualizada.');
+      onRefresh?.();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao atualizar categorias isentas.');
     } finally {
       setIsSaving(false);
     }
@@ -701,65 +761,119 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
           </div>
         </div>
 
-        {/* Card 3: Aviso de Material Pendente no Apontamento */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs space-y-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
-                  <AlertTriangle className="h-4 w-4" />
-                </div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Avisar o operador quando o material da peça ainda não foi recebido
-                </h3>
+        {/* Card 3: Operações sem Material Recebido */}
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700 border border-amber-200">
+                <AlertTriangle className="h-5 w-5" />
               </div>
-              <p className="text-xs text-slate-500 pl-10">
-                Alerta visual na tela de apontamento caso a matéria-prima ainda esteja pendente, solicitada ou comprada.
-              </p>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Operações sem material recebido
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Comportamento no Apontamento quando a matéria-prima ou item comercial do componente ainda não entrou no estoque.
+                </p>
+              </div>
             </div>
 
-            <div className="flex items-center gap-3 self-end sm:self-auto pl-10 sm:pl-0">
-              <div className="text-right">
-                <span
-                  className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${
-                    config?.avisar_operador_material_pendente
-                      ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                      : 'bg-slate-100 text-slate-600 border border-slate-200'
-                  }`}
-                >
-                  {config?.avisar_operador_material_pendente ? 'Ativo (Avisar)' : 'Desativado'}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(
+                [
+                  {
+                    value: 'ignorar' as ModoOperacaoSemMaterial,
+                    label: 'Ignorar',
+                    desc: 'Não exibe aviso nem bloqueia.',
+                  },
+                  {
+                    value: 'avisar' as ModoOperacaoSemMaterial,
+                    label: 'Avisar (Padrão)',
+                    desc: 'Exibe alerta amarelo, mas permite iniciar.',
+                  },
+                  {
+                    value: 'bloquear' as ModoOperacaoSemMaterial,
+                    label: 'Bloquear início',
+                    desc: 'Impede início até o recebimento.',
+                  },
+                ] as const
+              ).map((opt) => {
+                const active = modoSemMaterial === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={!canEdit || isSaving}
+                    onClick={() => handleChangeModoSemMaterial(opt.value)}
+                    className={`rounded-xl border p-3 text-left transition-all disabled:opacity-50 ${
+                      active
+                        ? opt.value === 'bloquear'
+                          ? 'border-rose-600 bg-rose-50 text-rose-950 ring-1 ring-rose-600'
+                          : opt.value === 'avisar'
+                          ? 'border-amber-600 bg-amber-50 text-amber-950 ring-1 ring-amber-600'
+                          : 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold">{opt.label}</span>
+                    <span
+                      className={`block text-[10px] mt-0.5 ${
+                        active && opt.value === 'ignorar' ? 'text-slate-300' : 'text-slate-500'
+                      }`}
+                    >
+                      {opt.desc}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Lista de categorias de centros de custo isentas do bloqueio */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800">
+                  Categorias de centros de custo isentas do bloqueio:
+                </span>
+                <span className="text-[10px] font-mono text-slate-500">
+                  Padrão: Programação
                 </span>
               </div>
-
-              {/* Toggle Switch */}
-              <button
-                type="button"
-                disabled={!canEdit || isSaving}
-                onClick={handleToggleAvisarMaterialPendente}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
-                  config?.avisar_operador_material_pendente ? 'bg-amber-600' : 'bg-slate-300'
-                }`}
-                role="switch"
-                aria-checked={config?.avisar_operador_material_pendente}
-                aria-label="Alternar aviso de material pendente ao operador"
-              >
-                <span
-                  aria-hidden="true"
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                    config?.avisar_operador_material_pendente ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
+              <p className="text-[11px] text-slate-500">
+                Operações em postos dessas categorias podem ser iniciadas (com aviso) mesmo quando o bloqueio estiver ativo.
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {todasCategoriasDisponiveis.map((cat) => {
+                  const checked = categoriasIsentas.some(
+                    (c) => c.trim().toLowerCase() === cat.trim().toLowerCase()
+                  );
+                  return (
+                    <label
+                      key={cat}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold cursor-pointer transition-colors ${
+                        checked
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        disabled={!canEdit || isSaving}
+                        checked={checked}
+                        onChange={() => handleToggleCategoriaIsenta(cat)}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-0"
+                      />
+                      <span>{cat}</span>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
-          <p className="text-xs leading-relaxed text-slate-600">
-            Quando ligado, se a matéria-prima da peça ainda não constar com status <strong>Recebido</strong> no
-            módulo de compras, a tela de Apontamento exibe a etiqueta destacada <strong>"Material não recebido"</strong> no card da operação. O início do apontamento continua permitido para flexibilidade operacional da oficina.
-          </p>
-
-          <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>Padrão do Sistema: <strong>Desligado</strong></span>
+          <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span>
+              Padrão: <strong>Avisar</strong> · Isenta: <strong>Programação</strong>
+            </span>
             {!canEdit && (
               <span className="text-[11px] text-amber-700 italic">
                 Apenas Gerente e Administrador podem alterar

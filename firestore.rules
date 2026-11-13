@@ -243,6 +243,8 @@ service cloud.firestore {
              (!('restringir_postos' in data) || data.restringir_postos is bool) &&
              (!('liberar_apenas_proxima_operacao' in data) || data.liberar_apenas_proxima_operacao is bool) &&
              (!('avisar_operador_material_pendente' in data) || data.avisar_operador_material_pendente is bool) &&
+             (!('operacoes_sem_material_recebido' in data) || data.operacoes_sem_material_recebido in ['ignorar', 'avisar', 'bloquear']) &&
+             (!('categorias_isentas_bloqueio_material' in data) || data.categorias_isentas_bloqueio_material is list) &&
              (!('permitir_saldo_negativo' in data) || data.permitir_saldo_negativo is bool) &&
              (!('dias_alerta_reserva_parada' in data) || data.dias_alerta_reserva_parada is number);
     }
@@ -277,6 +279,12 @@ service cloud.firestore {
              (!('componente_id' in data) || data.componente_id == null || (data.componente_id is string && data.componente_id.size() <= 128)) &&
              (!('item_estoque_id' in data) || data.item_estoque_id == null || (data.item_estoque_id is string && data.item_estoque_id.size() <= 128)) &&
              (!('movimento_entrada_id' in data) || data.movimento_entrada_id == null || (data.movimento_entrada_id is string && data.movimento_entrada_id.size() <= 128)) &&
+             (!('quantidade_recebida' in data) || data.quantidade_recebida == null || (data.quantidade_recebida is number && data.quantidade_recebida >= 0)) &&
+             (!('quantidade_pendente' in data) || data.quantidade_pendente == null || (data.quantidade_pendente is number && data.quantidade_pendente >= 0)) &&
+             (!('movimento_entrada_ids' in data) || data.movimento_entrada_ids == null || data.movimento_entrada_ids is list) &&
+             (!('etiquetas_criadas' in data) || data.etiquetas_criadas == null || data.etiquetas_criadas is list) &&
+             (!('historico_recebimentos' in data) || data.historico_recebimentos == null || data.historico_recebimentos is list) &&
+             (!('estorno_movimento_ids' in data) || data.estorno_movimento_ids == null || data.estorno_movimento_ids is list) &&
              data.tipo in ['materia_prima', 'item_comercial', 'reposicao'] &&
              data.status in ['a_solicitar', 'solicitado', 'comprado', 'recebido', 'cancelado', 'atendido_estoque'] &&
              data.quantidade is number && data.quantidade > 0 &&

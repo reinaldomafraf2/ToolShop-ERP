@@ -2,6 +2,7 @@ export type OrigemCentroCusto = 'interno' | 'terceirizado';
 export type ModeloCusto = 'hora' | 'peca' | 'kg' | 'servico';
 
 export const CATEGORIAS_CENTRO_CUSTO_SUGESTO = [
+  'Programação',
   'CNC',
   'Eletroerosão',
   'Retífica',
@@ -197,8 +198,19 @@ export interface ProjetoComDetalhes extends Projeto {
   operacoesTerceirosEnviadasCount?: number;
 }
 
+export type MaterialStatusComponente =
+  | 'pendente'
+  | 'solicitado'
+  | 'comprado'
+  | 'parcial'
+  | 'recebido'
+  | 'retirado';
+
+export type ModoOperacaoSemMaterial = 'ignorar' | 'avisar' | 'bloquear';
+
 export interface ComponenteComOperacoes extends Componente {
   operacoes: OperacaoComDetalhes[];
+  material_status?: MaterialStatusComponente;
 }
 
 export interface OperacaoComDetalhes extends Operacao {
@@ -267,7 +279,9 @@ export interface ConfiguracoesSistema {
   empresa_logo?: string; // Imagem opcional em Base64 Data URL (até 500 KB)
 
   // Configurações de Compras & Produção
-  avisar_operador_material_pendente?: boolean; // Padrão: false (Avisar o operador quando o material da peça ainda não foi recebido)
+  avisar_operador_material_pendente?: boolean; // Legado/compatibilidade
+  operacoes_sem_material_recebido?: ModoOperacaoSemMaterial; // 'ignorar' | 'avisar' | 'bloquear' (Padrão: 'avisar')
+  categorias_isentas_bloqueio_material?: string[]; // Padrão: ['Programação']
 
   // Configurações de Estoque
   permitir_saldo_negativo?: boolean; // Padrão: false (Permitir saída ou reserva acima do saldo disponível)
@@ -320,17 +334,41 @@ export type StatusItemCompra =
   | 'cancelado'
   | 'atendido_estoque';
 
+export interface RecebimentoItemCompraRegistro {
+  id: string;
+  data_recebimento: string; // YYYY-MM-DD
+  quantidade: number;
+  nota_fiscal?: string;
+  item_estoque_id: string;
+  movimento_id: string;
+  unidade_ids?: string[];
+  etiquetas?: string[];
+  reserva_ids?: string[];
+  destinado_projeto?: boolean;
+  usuario_id: string;
+  usuario_nome?: string;
+  criado_em: string;
+  estornado?: boolean;
+  estornado_em?: string;
+  estornado_por?: string;
+  estorno_movimento_ids?: string[];
+}
+
 export interface ItemCompra {
   id: string; // UUID
   empresa_id: string; // UUID
   projeto_id?: string; // UUID (opcional para reposição ou compras gerais)
   componente_id?: string; // UUID (origem, opcional para reposição)
   item_estoque_id?: string; // UUID do ItemEstoque vinculado
-  movimento_entrada_id?: string; // UUID do MovimentoEstoque de entrada gerado
+  movimento_entrada_id?: string; // UUID do MovimentoEstoque de entrada gerado (último ou único)
+  movimento_entrada_ids?: string[]; // UUIDs de todos movimentos de entrada (recebimentos parciais)
+  etiquetas_criadas?: string[]; // Etiquetas PE-... geradas nos recebimentos
   tipo: TipoItemCompra; // 'materia_prima' | 'item_comercial' | 'reposicao'
   descricao: string;
   especificacao: string; // material, formato e dimensões em texto
   quantidade: number;
+  quantidade_recebida?: number; // Acumulado já recebido (padrão 0)
+  quantidade_pendente?: number; // Saldo restante a receber
   unidade: UnidadeItemCompra; // 'un' | 'kg' | 'm' | 'pç'
   peso_kg?: number;
   fornecedor_id?: string;
@@ -345,6 +383,10 @@ export interface ItemCompra {
   observacoes?: string;
   valor_estimado?: number;
   valor_real?: number;
+  historico_recebimentos?: RecebimentoItemCompraRegistro[];
+  estornado_em?: string;
+  estornado_por?: string;
+  estorno_movimento_ids?: string[];
   criado_em: string; // ISO string
 }
 
@@ -355,6 +397,8 @@ export interface ItemCompraComDetalhes extends ItemCompra {
   item_estoque?: ItemEstoque;
   atrasado?: boolean;
   diasAtraso?: number;
+  pode_estornar?: boolean;
+  motivo_bloqueio_estorno?: string;
 }
 
 // =========================================================================
@@ -413,6 +457,10 @@ export interface UnidadeEstoque {
   origem: OrigemUnidadeEstoque;
   origem_projeto_id?: string;
   origem_componente_id?: string;
+  origem_item_compra_id?: string;
+  numero_pedido?: string;
+  nota_fiscal?: string;
+  fornecedor_nome?: string;
   status: StatusUnidadeEstoque;
   observacoes?: string;
   criado_em: string; // ISO string
@@ -441,6 +489,10 @@ export interface MovimentoEstoque {
   projeto_id?: string;
   componente_id?: string;
   item_compra_id?: string;
+  numero_pedido?: string;
+  nota_fiscal?: string;
+  fornecedor_nome?: string;
+  movimento_estornado_id?: string;
   motivo: MotivoMovimentoEstoque;
   custo_unitario?: number; // Custo unitário no momento do movimento (R$)
   custo_total?: number; // Quantidade * custo_unitario (R$)

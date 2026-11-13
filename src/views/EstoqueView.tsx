@@ -13,6 +13,7 @@ import { toolShopService } from '../services/toolShopService';
 import { comprasService } from '../services/comprasService';
 import { useAuth } from '../auth/AuthContext';
 import { formatDateBR, formatDateTimeBR } from '../utils/formatters';
+import { consumeFocusEstoqueItem } from '../utils/estoqueNavigation';
 import { ItemEstoqueModal } from '../components/estoque/ItemEstoqueModal';
 import { ItemEstoqueDrawer } from '../components/estoque/ItemEstoqueDrawer';
 import {
@@ -138,8 +139,15 @@ export const EstoqueView: React.FC = () => {
       setProjetos(projList);
       setFornecedores(fornList);
 
-      // Atualiza referência do item no drawer se estiver aberto
-      if (drawerItem) {
+      // Atualiza referência do item no drawer se estiver aberto ou se veio de deep-link
+      const focusId = consumeFocusEstoqueItem();
+      if (focusId) {
+        const focused = itList.find((i) => i.id === focusId) || null;
+        if (focused) {
+          setActiveTab('itens');
+          setDrawerItem(focused);
+        }
+      } else if (drawerItem) {
         const refreshed = itList.find((i) => i.id === drawerItem.id) || null;
         setDrawerItem(refreshed);
       }
@@ -154,6 +162,25 @@ export const EstoqueView: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    const handleFocusEvent = (e: Event) => {
+      const custom = e as CustomEvent<{ itemId?: string }>;
+      const targetId = custom.detail?.itemId || consumeFocusEstoqueItem();
+      if (!targetId) return;
+      const found = itens.find((i) => i.id === targetId);
+      if (found) {
+        consumeFocusEstoqueItem();
+        setActiveTab('itens');
+        setDrawerItem(found);
+      } else {
+        loadData();
+      }
+    };
+
+    window.addEventListener('toolshop:focus-estoque-item', handleFocusEvent);
+    return () => window.removeEventListener('toolshop:focus-estoque-item', handleFocusEvent);
+  }, [itens, loadData]);
 
   // Opções únicas de localização para filtro
   const localizacoesUnicas = useMemo(() => {
@@ -852,9 +879,20 @@ export const EstoqueView: React.FC = () => {
                           >
                             {u.origem === 'sobra' ? 'SOBRA / RETALHO' : 'COMPRA'}
                           </span>
-                          {u.origem_projeto_codigo && (
-                            <span className="block text-[10px] text-slate-400 mt-0.5 font-mono">
-                              O.S. {u.origem_projeto_codigo}
+                          {(u.numero_pedido || u.nota_fiscal || u.origem_projeto_codigo) && (
+                            <span className="block text-[10px] text-slate-500 mt-0.5 font-mono">
+                              {[
+                                u.numero_pedido ? `Ped. ${u.numero_pedido}` : null,
+                                u.nota_fiscal ? `NF ${u.nota_fiscal}` : null,
+                                u.origem_projeto_codigo ? `O.S. ${u.origem_projeto_codigo}` : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          )}
+                          {u.lote_ou_certificado && (
+                            <span className="block text-[10px] text-slate-400 font-mono">
+                              Cert/Lote: {u.lote_ou_certificado}
                             </span>
                           )}
                         </td>
@@ -1002,7 +1040,18 @@ export const EstoqueView: React.FC = () => {
                         </td>
 
                         <td className="py-2.5 px-3 capitalize font-medium text-slate-800">
-                          {m.motivo}
+                          <div>{m.motivo}</div>
+                          {(m.item_compra_id || m.numero_pedido || m.nota_fiscal) && (
+                            <div className="text-[10px] text-slate-500 font-mono normal-case mt-0.5">
+                              {[
+                                'Compra',
+                                m.numero_pedido ? `Ped. ${m.numero_pedido}` : null,
+                                m.nota_fiscal ? `NF ${m.nota_fiscal}` : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </div>
+                          )}
                         </td>
 
                         <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">

@@ -49,6 +49,19 @@ import {
   purgeExampleDataFromFirestore,
 } from '../repositories/firestoreRepositories';
 import { initializeSeedData } from '../repositories/localStorageRepositories';
+import { itemCompraRepository } from '../repositories/comprasRepository';
+import {
+  FirestoreMovimentoEstoqueRepository,
+  FirestoreReservaEstoqueRepository,
+} from '../repositories/estoqueRepository';
+import {
+  computeComponenteMaterialStatus,
+  avaliarLiberacaoOperacaoMaterial,
+} from '../utils/materialStatus';
+import {
+  executeCascadeDeleteProjeto,
+  executeCascadeDeleteComponente,
+} from '../repositories/cascadeDelete';
 import { isExampleItem } from '../data/seedData';
 import { calculateDurationHours } from '../utils/formatters';
 import { DEFAULT_EMPRESA_ID } from '../utils/uuid';
@@ -488,7 +501,10 @@ export class ToolShopService {
   }
 
   async getProjetosComDetalhes(empresaId: string = DEFAULT_EMPRESA_ID): Promise<ProjetoComDetalhes[]> {
-    const [projetos, clientes, componentes, operacoes, apontamentos, maquinas] =
+    const movRepo = new FirestoreMovimentoEstoqueRepository();
+    const resRepo = new FirestoreReservaEstoqueRepository();
+
+    const [projetos, clientes, componentes, operacoes, apontamentos, maquinas, itensCompra, movimentosEstoque, reservasEstoque] =
       await Promise.all([
         this.projetosRepo.getAll(empresaId),
         this.clientesRepo.getAll(empresaId),
@@ -496,10 +512,40 @@ export class ToolShopService {
         this.operacoesRepo.getAll(empresaId),
         this.apontamentosRepo.getAll(empresaId),
         this.maquinasRepo.getAll(empresaId),
+        itemCompraRepository.getAll(empresaId).catch(() => []),
+        movRepo.getAll(empresaId).catch(() => []),
+        resRepo.getAll(empresaId).catch(() => []),
       ]);
 
     const clienteMap = new Map(clientes.map((c) => [c.id, c]));
     const maquinaMap = new Map(maquinas.map((m) => [m.id, m]));
+
+    const itensCompraPorComp = new Map<string, typeof itensCompra>();
+    itensCompra.forEach((ic) => {
+      if (ic.componente_id) {
+        const list = itensCompraPorComp.get(ic.componente_id) || [];
+        list.push(ic);
+        itensCompraPorComp.set(ic.componente_id, list);
+      }
+    });
+
+    const movsPorComp = new Map<string, typeof movimentosEstoque>();
+    movimentosEstoque.forEach((m) => {
+      if (m.componente_id) {
+        const list = movsPorComp.get(m.componente_id) || [];
+        list.push(m);
+        movsPorComp.set(m.componente_id, list);
+      }
+    });
+
+    const resPorComp = new Map<string, typeof reservasEstoque>();
+    reservasEstoque.forEach((r) => {
+      if (r.componente_id) {
+        const list = resPorComp.get(r.componente_id) || [];
+        list.push(r);
+        resPorComp.set(r.componente_id, list);
+      }
+    });
 
     return projetos.map((proj) => {
       const projComponentes = componentes.filter((c) => c.projeto_id === proj.id);
@@ -548,9 +594,17 @@ export class ToolShopService {
           };
         });
 
+        const materialStatus = computeComponenteMaterialStatus(
+          comp,
+          itensCompraPorComp.get(comp.id) || [],
+          movsPorComp.get(comp.id) || [],
+          resPorComp.get(comp.id) || []
+        );
+
         return {
           ...comp,
           operacoes: operacoesDetalhes,
+          material_status: materialStatus,
         };
       });
 
@@ -646,11 +700,7 @@ export class ToolShopService {
   }
 
   async deleteProjeto(id: string): Promise<boolean> {
-    const componentes = await this.componentesRepo.getByProjetoId(id);
-    for (const comp of componentes) {
-      await this.deleteComponente(comp.id);
-    }
-    return this.projetosRepo.delete(id);
+    return executeCascadeDeleteProjeto(id);
   }
 
   // --- COMPONENTES ---
@@ -676,11 +726,7 @@ export class ToolShopService {
   }
 
   async deleteComponente(id: string): Promise<boolean> {
-    const operacoes = await this.operacoesRepo.getByComponenteId(id);
-    for (const op of operacoes) {
-      await this.deleteOperacao(op.id);
-    }
-    return this.componentesRepo.delete(id);
+    return executeCascadeDeleteComponente(id);
   }
 
   // --- OPERAÇÕES ---
@@ -840,8 +886,9 @@ export class ToolShopService {
     }
 
     const centroId = op.centro_custo_id || op.maquina_id;
+    let centro: CentroCusto | null = null;
     if (centroId) {
-      const centro = await this.centrosCustoRepo.getById(centroId);
+      centro = await this.centrosCustoRepo.getById(centroId);
       if (centro?.origem === 'terceirizado') {
         throw new Error('Esta operação pertence a um processo terceirizado e não permite apontamento.');
       }
@@ -869,6 +916,37 @@ export class ToolShopService {
       );
       if (anterioresNaoConcluidas.length > 0) {
         throw new Error('A operação anterior deste componente ainda não foi concluída.');
+      }
+    }
+
+    // Validação de liberação por material recebido (conforme configuração)
+    if (op.componente_id) {
+      const comp = await this.componentesRepo.getById(op.componente_id);
+      if (comp) {
+        const movRepo = new FirestoreMovimentoEstoqueRepository();
+        const resRepo = new FirestoreReservaEstoqueRepository();
+        const [itensCompraProj, movsAll, resAll] = await Promise.all([
+          itemCompraRepository.getByProjetoId(comp.projeto_id, empresaId).catch(() => []),
+          movRepo.getAll(empresaId).catch(() => []),
+          resRepo.getAll(empresaId).catch(() => []),
+        ]);
+        const materialStatus = computeComponenteMaterialStatus(
+          comp,
+          itensCompraProj.filter((i) => i.componente_id === comp.id),
+          movsAll.filter((m) => m.componente_id === comp.id),
+          resAll.filter((r) => r.componente_id === comp.id)
+        );
+        const avaliacao = avaliarLiberacaoOperacaoMaterial({
+          materialStatus,
+          centroCustoCategoria: centro?.categoria || centro?.tipo,
+          componenteTipo: comp.tipo,
+          cfg,
+        });
+        if (avaliacao.bloqueado) {
+          throw new Error(
+            avaliacao.motivo || 'Operação bloqueada: o material deste componente ainda não foi recebido.'
+          );
+        }
       }
     }
 

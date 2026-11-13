@@ -18,7 +18,11 @@ import {
   UnidadeEstoque,
   MovimentoEstoque,
   ReservaEstoque,
+  ItemCompra,
+  RecebimentoItemCompraRegistro,
+  StatusItemCompra,
 } from '../types';
+import { LocalItemCompraRepository } from './comprasRepository';
 import { generateUUID, DEFAULT_EMPRESA_ID } from '../utils/uuid';
 
 // =========================================================================
@@ -847,6 +851,516 @@ export async function executeAtomicEstoqueOperation(
     console.error('[Firestore runTransaction] Erro na transação atômica de estoque:', err);
     // Se for erro de permissão ou conexão, re-lança para notificar o usuário na UI
     handleFirestoreError(err, OperationType.UPDATE, `itens_estoque/${params.itemId}`);
+    throw err;
+  }
+}
+
+// =========================================================================
+// 4. TRANSAÇÃO ATÔMICA DE RECEBIMENTO DE COMPRA (ENTRADA + RESERVA + ITEMCOMPRA)
+// =========================================================================
+
+export interface RecebimentoAtomicTransactionParams {
+  empresaId?: string;
+  itemCompraId: string;
+  novoItemEstoque?: ItemEstoque;
+  existingItemEstoqueId?: string;
+  quantidadeRecebida: number;
+  valorUnitarioEntrada?: number;
+  novasUnidades: UnidadeEstoque[];
+  movimento: MovimentoEstoque;
+  novasReservas: ReservaEstoque[];
+  dataRecebimento: string;
+  notaFiscal?: string;
+  registroRecebimento: RecebimentoItemCompraRegistro;
+}
+
+export interface RecebimentoAtomicTransactionResult {
+  itemCompraAtualizado: ItemCompra;
+  itemEstoqueAtualizado: ItemEstoque;
+  unidadesCriadas: UnidadeEstoque[];
+  movimentoCriado: MovimentoEstoque;
+  reservasCriadas: ReservaEstoque[];
+}
+
+export async function executeAtomicRecebimentoTransaction(
+  params: RecebimentoAtomicTransactionParams
+): Promise<RecebimentoAtomicTransactionResult> {
+  const empresaId = params.empresaId || DEFAULT_EMPRESA_ID;
+  const localItemRepo = new LocalItemEstoqueRepository();
+  const localUnidadeRepo = new LocalUnidadeEstoqueRepository();
+  const localMovimentoRepo = new LocalMovimentoEstoqueRepository();
+  const localReservaRepo = new LocalReservaEstoqueRepository();
+  const localItemCompraRepo = new LocalItemCompraRepository();
+
+  let itemCompraAtualizado!: ItemCompra;
+  let itemEstoqueAtualizado!: ItemEstoque;
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const itemCompraRef = doc(db, 'itens_compra', params.itemCompraId);
+      const icSnap = await transaction.get(itemCompraRef);
+      if (!icSnap.exists()) {
+        throw new Error(
+          'Este item de compra ainda não existe no servidor (Firestore). Sincronize na aba Sincronização antes de registrar o recebimento.'
+        );
+      }
+
+      const targetItemEstoqueId = params.novoItemEstoque
+        ? params.novoItemEstoque.id
+        : params.existingItemEstoqueId || '';
+      if (!targetItemEstoqueId) {
+        throw new Error('Item de estoque de destino não informado.');
+      }
+
+      const itemEstoqueRef = doc(db, 'itens_estoque', targetItemEstoqueId);
+      const itemEstoqueSnap = params.novoItemEstoque ? null : await transaction.get(itemEstoqueRef);
+
+      const icData = icSnap.data() as ItemCompra;
+      if (icData.status === 'recebido' || icData.status === 'atendido_estoque' || icData.status === 'cancelado') {
+        throw new Error('Este item de compra já foi totalmente recebido, atendido ou cancelado.');
+      }
+
+      const qtdTotal = Math.max(0, Number(icData.quantidade) || 0);
+      const qtdRecebidaAntes = Number(icData.quantidade_recebida ?? 0) || 0;
+      const qtdPendenteAntes =
+        icData.quantidade_pendente !== undefined && icData.quantidade_pendente !== null
+          ? Math.max(0, Number(icData.quantidade_pendente) || 0)
+          : Math.max(0, Number((qtdTotal - qtdRecebidaAntes).toFixed(4)));
+
+      if (qtdPendenteAntes <= 0) {
+        throw new Error('Não há quantidade pendente para receber neste item.');
+      }
+
+      if (!Number.isFinite(params.quantidadeRecebida) || params.quantidadeRecebida <= 0) {
+        throw new Error('A quantidade recebida deve ser maior que zero.');
+      }
+
+      if (params.quantidadeRecebida > qtdPendenteAntes + 0.0001) {
+        throw new Error(
+          `A quantidade recebida (${params.quantidadeRecebida}) excede a quantidade pendente (${qtdPendenteAntes}).`
+        );
+      }
+
+      // 1. Calcula novo saldo e custo médio móvel do ItemEstoque
+      if (params.novoItemEstoque) {
+        const custoUnit =
+          params.valorUnitarioEntrada !== undefined && params.valorUnitarioEntrada >= 0
+            ? Number(params.valorUnitarioEntrada.toFixed(4))
+            : params.novoItemEstoque.custo_medio;
+        itemEstoqueAtualizado = {
+          ...params.novoItemEstoque,
+          empresa_id: empresaId,
+          saldo: Number(params.quantidadeRecebida.toFixed(4)),
+          ...(custoUnit !== undefined ? { custo_medio: custoUnit } : {}),
+        };
+        transaction.set(itemEstoqueRef, cleanFirestoreData(itemEstoqueAtualizado));
+      } else {
+        if (!itemEstoqueSnap || !itemEstoqueSnap.exists()) {
+          throw new Error(
+            'O item de estoque selecionado ainda não existe no servidor. Sincronize antes de receber.'
+          );
+        }
+        const estData = itemEstoqueSnap.data() as ItemEstoque;
+        const saldoAtual = Number(estData.saldo) || 0;
+        const novoSaldo = Number((saldoAtual + params.quantidadeRecebida).toFixed(4));
+        let novoCustoMedio = estData.custo_medio;
+
+        if (params.valorUnitarioEntrada !== undefined && params.valorUnitarioEntrada >= 0) {
+          const custoAtual = Number(estData.custo_medio) || 0;
+          const baseValor = Math.max(0, saldoAtual) * custoAtual;
+          const entradaValor = params.quantidadeRecebida * params.valorUnitarioEntrada;
+          novoCustoMedio =
+            novoSaldo > 0
+              ? Number(((baseValor + entradaValor) / novoSaldo).toFixed(4))
+              : Number(params.valorUnitarioEntrada.toFixed(4));
+        }
+
+        itemEstoqueAtualizado = {
+          ...estData,
+          saldo: novoSaldo,
+          ...(novoCustoMedio !== undefined ? { custo_medio: novoCustoMedio } : {}),
+        };
+
+        transaction.update(
+          itemEstoqueRef,
+          cleanFirestoreData({
+            saldo: novoSaldo,
+            ...(novoCustoMedio !== undefined ? { custo_medio: novoCustoMedio } : {}),
+          }) as { [key: string]: unknown }
+        );
+      }
+
+      // 2. Cria unidades físicas (se houver)
+      for (const unidade of params.novasUnidades) {
+        const uRef = doc(db, 'unidades_estoque', unidade.id);
+        transaction.set(
+          uRef,
+          cleanFirestoreData({
+            ...unidade,
+            empresa_id: empresaId,
+          })
+        );
+      }
+
+      // 3. Cria movimento imutável de entrada
+      const movRef = doc(db, 'movimentos_estoque', params.movimento.id);
+      transaction.set(
+        movRef,
+        cleanFirestoreData({
+          ...params.movimento,
+          empresa_id: empresaId,
+        })
+      );
+
+      // 4. Cria reservas (se destinar ao projeto de origem)
+      for (const reserva of params.novasReservas) {
+        const resRef = doc(db, 'reservas_estoque', reserva.id);
+        transaction.set(
+          resRef,
+          cleanFirestoreData({
+            ...reserva,
+            empresa_id: empresaId,
+          })
+        );
+      }
+
+      // 5. Atualiza ItemCompra (parcial ou recebido completo)
+      const novaQtdRecebida = Number((qtdRecebidaAntes + params.quantidadeRecebida).toFixed(4));
+      const novaQtdPendente = Math.max(0, Number((qtdTotal - novaQtdRecebida).toFixed(4)));
+      const novoStatus: StatusItemCompra = novaQtdPendente <= 0.0001 ? 'recebido' : 'comprado';
+
+      const movIds = Array.from(
+        new Set([
+          ...(icData.movimento_entrada_ids ||
+            (icData.movimento_entrada_id ? [icData.movimento_entrada_id] : [])),
+          params.movimento.id,
+        ])
+      );
+      const etiquetasNovas = params.novasUnidades.map((u) => u.etiqueta);
+      const etiquetasCriadas = Array.from(
+        new Set([...(icData.etiquetas_criadas || []), ...etiquetasNovas])
+      );
+      const historicoRecebimentos = [
+        ...(icData.historico_recebimentos || []),
+        params.registroRecebimento,
+      ];
+
+      const icUpdates: Partial<ItemCompra> = {
+        status: novoStatus,
+        quantidade_recebida: novaQtdRecebida,
+        quantidade_pendente: novaQtdPendente <= 0.0001 ? 0 : novaQtdPendente,
+        data_recebimento: params.dataRecebimento,
+        nota_fiscal: params.notaFiscal?.trim() || icData.nota_fiscal || '',
+        item_estoque_id: targetItemEstoqueId,
+        movimento_entrada_id: params.movimento.id,
+        movimento_entrada_ids: movIds,
+        etiquetas_criadas: etiquetasCriadas,
+        historico_recebimentos: historicoRecebimentos,
+      };
+
+      itemCompraAtualizado = {
+        ...icData,
+        ...icUpdates,
+      };
+
+      transaction.update(
+        itemCompraRef,
+        cleanFirestoreData(icUpdates) as { [key: string]: unknown }
+      );
+    });
+
+    // Somente após o commit da transação no Firestore, espelha no armazenamento local
+    if (params.novoItemEstoque) {
+      const existsLocal = await localItemRepo.getById(itemEstoqueAtualizado.id);
+      if (existsLocal) {
+        await localItemRepo.update(itemEstoqueAtualizado.id, itemEstoqueAtualizado);
+      } else {
+        await localItemRepo.create(itemEstoqueAtualizado);
+      }
+    } else {
+      const existsLocal = await localItemRepo.getById(itemEstoqueAtualizado.id);
+      if (existsLocal) {
+        await localItemRepo.update(itemEstoqueAtualizado.id, {
+          saldo: itemEstoqueAtualizado.saldo,
+          custo_medio: itemEstoqueAtualizado.custo_medio,
+        });
+      } else {
+        await localItemRepo.create(itemEstoqueAtualizado);
+      }
+    }
+
+    for (const u of params.novasUnidades) {
+      await localUnidadeRepo.create({ ...u, empresa_id: empresaId });
+    }
+    await localMovimentoRepo.create({ ...params.movimento, empresa_id: empresaId });
+    for (const r of params.novasReservas) {
+      await localReservaRepo.create({ ...r, empresa_id: empresaId });
+    }
+    const localIc = await localItemCompraRepo.getById(params.itemCompraId);
+    if (localIc) {
+      await localItemCompraRepo.update(params.itemCompraId, itemCompraAtualizado);
+    }
+
+    syncStatusService.recordSuccess('recebimento atômico no estoque');
+    return {
+      itemCompraAtualizado,
+      itemEstoqueAtualizado,
+      unidadesCriadas: params.novasUnidades,
+      movimentoCriado: params.movimento,
+      reservasCriadas: params.novasReservas,
+    };
+  } catch (err: any) {
+    console.error('[Firestore runTransaction] Erro na transação atômica de recebimento:', err);
+    syncStatusService.recordError(err, 'recebimento atômico no estoque');
+    throw err;
+  }
+}
+
+// =========================================================================
+// 5. TRANSAÇÃO ATÔMICA DE ESTORNO DE RECEBIMENTO DE COMPRA
+// =========================================================================
+
+export interface EstornoRecebimentoTransactionParams {
+  empresaId?: string;
+  itemCompraId: string;
+  estornoMovimentos: Array<{
+    itemEstoqueId: string;
+    quantidadeEstornada: number;
+    movimentoInverso: MovimentoEstoque;
+  }>;
+  unidadeIdsParaDescartar: string[];
+  reservaIdsParaCancelar: string[];
+  usuarioNome: string;
+  permitirSaldoNegativo?: boolean;
+}
+
+export async function executeAtomicEstornoRecebimentoTransaction(
+  params: EstornoRecebimentoTransactionParams
+): Promise<ItemCompra> {
+  const empresaId = params.empresaId || DEFAULT_EMPRESA_ID;
+  const localItemRepo = new LocalItemEstoqueRepository();
+  const localUnidadeRepo = new LocalUnidadeEstoqueRepository();
+  const localMovimentoRepo = new LocalMovimentoEstoqueRepository();
+  const localReservaRepo = new LocalReservaEstoqueRepository();
+  const localItemCompraRepo = new LocalItemCompraRepository();
+
+  let itemCompraAtualizado!: ItemCompra;
+  const itensEstoqueAtualizados: Array<{ id: string; saldo: number }> = [];
+  const agoraIso = new Date().toISOString();
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const itemCompraRef = doc(db, 'itens_compra', params.itemCompraId);
+      const icSnap = await transaction.get(itemCompraRef);
+      if (!icSnap.exists()) {
+        throw new Error('Item de compra não encontrado no servidor.');
+      }
+
+      const icData = icSnap.data() as ItemCompra;
+      const qtdRecebidaAtual = Number(
+        icData.quantidade_recebida ?? (icData.status === 'recebido' ? icData.quantidade : 0)
+      );
+      if (qtdRecebidaAtual <= 0 && icData.status !== 'recebido') {
+        throw new Error('Este item não possui recebimentos ativos para estornar.');
+      }
+
+      // Agrupa redução de saldo por itemEstoqueId
+      const deltaPorItem = new Map<string, number>();
+      for (const est of params.estornoMovimentos) {
+        deltaPorItem.set(
+          est.itemEstoqueId,
+          (deltaPorItem.get(est.itemEstoqueId) || 0) + est.quantidadeEstornada
+        );
+      }
+
+      // Leitura de todos os itens de estoque afetados
+      const itemSnaps = new Map<string, ItemEstoque>();
+      for (const [itemEstId] of deltaPorItem.entries()) {
+        const ref = doc(db, 'itens_estoque', itemEstId);
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) {
+          throw new Error('O item de estoque vinculado a este recebimento não foi encontrado no servidor.');
+        }
+        itemSnaps.set(itemEstId, snap.data() as ItemEstoque);
+      }
+
+      // Leitura e validação de todas as unidades físicas criadas pelo recebimento
+      const unidadeObsMap = new Map<string, string>();
+      for (const uId of params.unidadeIdsParaDescartar) {
+        const uRef = doc(db, 'unidades_estoque', uId);
+        const uSnap = await transaction.get(uRef);
+        if (uSnap.exists()) {
+          const uData = uSnap.data() as UnidadeEstoque;
+          if (uData.status === 'consumida') {
+            throw new Error(
+              `Não é possível estornar: a etiqueta ${uData.etiqueta} já foi retirada/consumida pela produção.`
+            );
+          }
+          unidadeObsMap.set(uId, uData.observacoes || '');
+        }
+      }
+
+      // Leitura e validação de todas as reservas criadas pelo recebimento
+      const reservasValidas = new Set<string>();
+      for (const rId of params.reservaIdsParaCancelar) {
+        const rRef = doc(db, 'reservas_estoque', rId);
+        const rSnap = await transaction.get(rRef);
+        if (rSnap.exists()) {
+          const rData = rSnap.data() as ReservaEstoque;
+          if (rData.status === 'consumida') {
+            throw new Error(
+              'Não é possível estornar: a reserva criada no recebimento já foi consumida pela produção.'
+            );
+          }
+          if (rData.status === 'ativa') {
+            reservasValidas.add(rId);
+          }
+        }
+      }
+
+      // Validação de saldo suficiente no estoque
+      for (const [itemEstId, qtdEstorno] of deltaPorItem.entries()) {
+        const estData = itemSnaps.get(itemEstId)!;
+        const saldoAtual = Number(estData.saldo) || 0;
+        const novoSaldo = Number((saldoAtual - qtdEstorno).toFixed(4));
+        if (!params.permitirSaldoNegativo && novoSaldo < 0) {
+          throw new Error(
+            `Não é possível estornar: o item "${estData.descricao}" possui saldo atual de ${saldoAtual} ${estData.unidade}, menor que a quantidade a estornar (${qtdEstorno}).`
+          );
+        }
+        itensEstoqueAtualizados.push({ id: itemEstId, saldo: novoSaldo });
+      }
+
+      // --- ESCRITAS ATÔMICAS ---
+      // 1. Atualiza saldos dos itens de estoque
+      for (const itemUpd of itensEstoqueAtualizados) {
+        const ref = doc(db, 'itens_estoque', itemUpd.id);
+        transaction.update(ref, { saldo: itemUpd.saldo });
+      }
+
+      // 2. Cria movimentos inversos (imutáveis)
+      for (const est of params.estornoMovimentos) {
+        const movRef = doc(db, 'movimentos_estoque', est.movimentoInverso.id);
+        transaction.set(
+          movRef,
+          cleanFirestoreData({
+            ...est.movimentoInverso,
+            empresa_id: empresaId,
+          })
+        );
+      }
+
+      // 3. Descarta unidades físicas geradas no recebimento
+      for (const [uId, obsAtual] of unidadeObsMap.entries()) {
+        const uRef = doc(db, 'unidades_estoque', uId);
+        const obsEstorno = `[Estorno em ${agoraIso.split('T')[0]} por ${params.usuarioNome}]`;
+        transaction.update(uRef, {
+          status: 'descartada',
+          observacoes: obsAtual ? `${obsAtual} | ${obsEstorno}` : obsEstorno,
+        });
+      }
+
+      // 4. Cancela reservas geradas no recebimento
+      for (const rId of reservasValidas) {
+        const rRef = doc(db, 'reservas_estoque', rId);
+        transaction.update(rRef, { status: 'cancelada' });
+      }
+
+      // 5. Restaura o ItemCompra ao estado anterior
+      const statusAnterior: StatusItemCompra = icData.numero_pedido?.trim()
+        ? 'comprado'
+        : icData.data_solicitacao?.trim()
+          ? 'solicitado'
+          : 'a_solicitar';
+
+      const estornoMovIds = params.estornoMovimentos.map((e) => e.movimentoInverso.id);
+      const historicoAtualizado = (icData.historico_recebimentos || []).map((rec) =>
+        rec.estornado
+          ? rec
+          : {
+              ...rec,
+              estornado: true,
+              estornado_em: agoraIso,
+              estornado_por: params.usuarioNome,
+              estorno_movimento_ids: estornoMovIds,
+            }
+      );
+
+      const icRestore: Record<string, any> = {
+        status: statusAnterior,
+        quantidade_recebida: 0,
+        quantidade_pendente: Number(icData.quantidade) || 0,
+        data_recebimento: '',
+        nota_fiscal: '',
+        movimento_entrada_id: null,
+        movimento_entrada_ids: [],
+        etiquetas_criadas: [],
+        historico_recebimentos: historicoAtualizado,
+        estornado_em: agoraIso,
+        estornado_por: params.usuarioNome,
+        estorno_movimento_ids: Array.from(
+          new Set([...(icData.estorno_movimento_ids || []), ...estornoMovIds])
+        ),
+      };
+
+      itemCompraAtualizado = {
+        ...icData,
+        status: statusAnterior,
+        quantidade_recebida: 0,
+        quantidade_pendente: Number(icData.quantidade) || 0,
+        data_recebimento: undefined,
+        nota_fiscal: undefined,
+        movimento_entrada_id: undefined,
+        movimento_entrada_ids: [],
+        etiquetas_criadas: [],
+        historico_recebimentos: historicoAtualizado,
+        estornado_em: agoraIso,
+        estornado_por: params.usuarioNome,
+        estorno_movimento_ids: icRestore.estorno_movimento_ids,
+      };
+
+      transaction.update(
+        itemCompraRef,
+        cleanFirestoreData(icRestore) as { [key: string]: unknown }
+      );
+    });
+
+    // Espelha no armazenamento local somente após sucesso da transação no Firestore
+    for (const itemUpd of itensEstoqueAtualizados) {
+      await localItemRepo.update(itemUpd.id, { saldo: itemUpd.saldo }).catch(() => {});
+    }
+    for (const est of params.estornoMovimentos) {
+      await localMovimentoRepo.create({ ...est.movimentoInverso, empresa_id: empresaId });
+    }
+    for (const uId of params.unidadeIdsParaDescartar) {
+      await localUnidadeRepo.update(uId, { status: 'descartada' }).catch(() => {});
+    }
+    for (const rId of params.reservaIdsParaCancelar) {
+      await localReservaRepo.update(rId, { status: 'cancelada' }).catch(() => {});
+    }
+    const localIc = await localItemCompraRepo.getById(params.itemCompraId);
+    if (localIc) {
+      await localItemCompraRepo.update(params.itemCompraId, {
+        status: itemCompraAtualizado.status,
+        quantidade_recebida: 0,
+        quantidade_pendente: itemCompraAtualizado.quantidade_pendente,
+        data_recebimento: undefined,
+        nota_fiscal: undefined,
+        movimento_entrada_id: undefined,
+        movimento_entrada_ids: [],
+        etiquetas_criadas: [],
+        historico_recebimentos: itemCompraAtualizado.historico_recebimentos,
+        estornado_em: agoraIso,
+        estornado_por: params.usuarioNome,
+        estorno_movimento_ids: itemCompraAtualizado.estorno_movimento_ids,
+      });
+    }
+
+    syncStatusService.recordSuccess('estorno atômico de recebimento');
+    return itemCompraAtualizado;
+  } catch (err: any) {
+    console.error('[Firestore runTransaction] Erro ao estornar recebimento:', err);
+    syncStatusService.recordError(err, 'estorno de recebimento');
     throw err;
   }
 }

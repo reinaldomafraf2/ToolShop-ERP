@@ -8,24 +8,29 @@ import {
   ItemEstoqueComDetalhes,
 } from '../../types';
 import { useAuth } from '../../auth/AuthContext';
-import { formatDateBR, formatCurrencyBRL } from '../../utils/formatters';
+import { formatDateBR } from '../../utils/formatters';
 import { estoqueService } from '../../services/estoqueService';
+import { navigateToEstoqueItem } from '../../utils/estoqueNavigation';
+import {
+  getQuantidadePendenteItem,
+  getQuantidadeRecebidaItem,
+  isRecebimentoParcial,
+} from '../../utils/materialStatus';
 import { SugestaoEstoqueBanner } from './SugestaoEstoqueBanner';
 import { DarEntradaRecebimentoModal } from './DarEntradaRecebimentoModal';
 import {
   X,
   Save,
   Trash2,
-  Calendar,
-  Truck,
   FileText,
   DollarSign,
   AlertTriangle,
   Clock,
   CheckCircle2,
-  Info,
   PackagePlus,
-  PackageCheck,
+  ExternalLink,
+  RotateCcw,
+  Tag,
 } from 'lucide-react';
 
 interface ItemCompraDetalhesDrawerProps {
@@ -47,13 +52,15 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
   onDelete,
   onRefresh,
 }) => {
-  const { perfil } = useAuth();
+  const { user, perfil } = useAuth();
   const canEditAll = perfil === 'gerente' || perfil === 'admin';
   const canViewCustos = perfil === 'gerente' || perfil === 'admin';
+  const canEstornar = perfil === 'gerente' || perfil === 'admin';
   const isLider = perfil === 'lider';
   const canDelete = canEditAll || isLider;
 
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+  const [isConfirmingEstorno, setIsConfirmingEstorno] = useState(false);
 
   const [formData, setFormData] = useState({
     tipo: 'materia_prima' as TipoItemCompra,
@@ -104,8 +111,9 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
         valor_real: item.valor_real !== undefined ? String(item.valor_real) : '',
       });
       setErro(null);
+      setIsConfirmingDelete(false);
+      setIsConfirmingEstorno(false);
 
-      // Carrega itens de estoque da empresa para o modal de entrada
       estoqueService
         .getItensComDetalhes(item.empresa_id)
         .then((res) => setItensEstoque(res))
@@ -114,6 +122,19 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
   }, [item]);
 
   if (!isOpen || !item) return null;
+
+  const qtdRecebida = getQuantidadeRecebidaItem(item);
+  const qtdPendente = getQuantidadePendenteItem(item);
+  const parcial = isRecebimentoParcial(item);
+  const podeReceber =
+    item.status !== 'recebido' &&
+    item.status !== 'atendido_estoque' &&
+    item.status !== 'cancelado' &&
+    qtdPendente > 0;
+  const temEntradaNoEstoque =
+    Boolean(item.movimento_entrada_id) ||
+    qtdRecebida > 0 ||
+    (item.historico_recebimentos || []).some((r) => !r.estornado);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,6 +204,27 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
     }
   };
 
+  const handleExecuteEstorno = async () => {
+    if (!user) return;
+    setIsSubmitting(true);
+    setErro(null);
+    try {
+      await estoqueService.estornarRecebimentoItemCompra(
+        item.id,
+        { id: user.id, nome: user.nome, perfil: user.perfil },
+        item.empresa_id
+      );
+      setIsConfirmingEstorno(false);
+      if (onRefresh) onRefresh();
+      onClose();
+    } catch (err: any) {
+      setErro(err.message || 'Erro ao estornar recebimento.');
+      setIsConfirmingEstorno(false);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-xs transition-opacity animate-in fade-in">
       <div className="relative w-full max-w-xl bg-white shadow-2xl flex flex-col h-full overflow-hidden">
@@ -191,12 +233,16 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
           <div>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
-                {item.projeto?.codigo || 'PROJETO'}
+                {item.projeto?.codigo || 'REPOSIÇÃO / ESTOQUE'}
               </span>
-              <span className="text-slate-400">·</span>
-              <span className="text-xs font-bold text-slate-700">
-                {item.componente?.nome || 'Peça'}
-              </span>
+              {item.componente?.nome && (
+                <>
+                  <span className="text-slate-400">·</span>
+                  <span className="text-xs font-bold text-slate-700">
+                    {item.componente.nome}
+                  </span>
+                </>
+              )}
             </div>
             <h2 className="text-base font-bold text-slate-900 mt-0.5">
               Detalhes da Necessidade de Compra
@@ -215,8 +261,8 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
         {/* Formulário com Scroll */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs text-slate-800">
           {erro && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-800 flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-800 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
               <span>{erro}</span>
             </div>
           )}
@@ -236,50 +282,155 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
           {/* Sugestão de Atendimento Imediato pelo Estoque / Sobras */}
           <SugestaoEstoqueBanner
             itemCompra={item}
-            onAtendidoSucesso={(msg) => {
+            onAtendidoSucesso={() => {
               if (onRefresh) onRefresh();
               onClose();
             }}
           />
 
-          {/* 1. SEÇÃO DE STATUS E RASTREIO */}
+          {/* 1. SEÇÃO DE STATUS, RECEBIMENTO E RASTREIO NO ESTOQUE */}
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
                 <Clock className="h-3.5 w-3.5 text-slate-600" />
-                <span>Fluxo e Status de Aquisição</span>
+                <span>Fluxo de Aquisição & Recebimento</span>
               </h3>
+              {parcial && (
+                <span className="rounded border border-amber-300 bg-amber-100 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-900">
+                  Recebido {qtdRecebida} de {item.quantidade} {item.unidade}
+                </span>
+              )}
             </div>
 
-            {/* Banner de Entrada no Estoque (Recebimento) */}
-            {item.movimento_entrada_id ? (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 flex items-center justify-between">
-                <div className="flex items-center gap-2 text-emerald-900 font-bold text-xs">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
-                  <span>Entrada Registrada no Estoque</span>
+            {/* Rastro de entrada no estoque + etiquetas + link */}
+            {temEntradaNoEstoque && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-emerald-900 font-bold text-xs">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                    <span>
+                      Entrou no estoque ({qtdRecebida} de {item.quantidade} {item.unidade})
+                    </span>
+                  </div>
+                  {item.item_estoque_id && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        navigateToEstoqueItem(item.item_estoque_id!);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 transition-colors cursor-pointer"
+                    >
+                      <span>Ver no Estoque</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
-                <span className="font-mono text-[10px] text-emerald-800 bg-white px-2 py-0.5 rounded border border-emerald-200">
-                  Movimento: {item.movimento_entrada_id.slice(0, 8)}...
-                </span>
+
+                {item.etiquetas_criadas && item.etiquetas_criadas.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-semibold text-emerald-800">Etiquetas:</span>
+                    {item.etiquetas_criadas.map((et) => (
+                      <span
+                        key={et}
+                        className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-900"
+                      >
+                        <Tag className="h-2.5 w-2.5" />
+                        {et}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {item.historico_recebimentos && item.historico_recebimentos.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t border-emerald-200/70">
+                    {item.historico_recebimentos.map((rec) => (
+                      <div
+                        key={rec.id}
+                        className={`flex items-center justify-between text-[10px] px-2 py-1 rounded ${
+                          rec.estornado ? 'bg-rose-50 text-rose-700 line-through' : 'bg-white/80 text-emerald-900'
+                        }`}
+                      >
+                        <span>
+                          {formatDateBR(rec.data_recebimento)} · <strong>{rec.quantidade} {item.unidade}</strong>
+                          {rec.nota_fiscal ? ` · NF ${rec.nota_fiscal}` : ''}
+                        </span>
+                        <span className="text-slate-500">
+                          {rec.estornado ? 'Estornado' : rec.usuario_nome || ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Estornar recebimento (Gerente e Admin) */}
+                {canEstornar && (
+                  <div className="pt-1 border-t border-emerald-200/70">
+                    {isConfirmingEstorno ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-300 bg-rose-50 p-2">
+                        <span className="text-[11px] font-bold text-rose-900">
+                          Gerar movimento inverso e restaurar item para pendente?
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={handleExecuteEstorno}
+                            disabled={isSubmitting}
+                            className="rounded-md bg-rose-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-700 disabled:opacity-50"
+                          >
+                            {isSubmitting ? 'Estornando...' : 'Confirmar Estorno'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsConfirmingEstorno(false)}
+                            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-emerald-800/80">
+                          {item.pode_estornar
+                            ? 'Precisa reverter? Estorne antes da retirada na produção.'
+                            : item.motivo_bloqueio_estorno || 'Estorno indisponível.'}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={!item.pode_estornar || isSubmitting}
+                          onClick={() => setIsConfirmingEstorno(true)}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-40 cursor-pointer"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          <span>Estornar Recebimento</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            ) : (
+            )}
+
+            {/* Botão principal de Receber (abre modal atômico; funciona inclusive para saldo restante de parciais) */}
+            {podeReceber && (
               <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                 <div>
                   <span className="block text-xs font-bold text-indigo-950 flex items-center gap-1.5">
                     <PackagePlus className="h-4 w-4 text-indigo-700" />
-                    Recebimento gera Entrada no Estoque
+                    {parcial ? `Receber Saldo Pendente (${qtdPendente} ${item.unidade})` : 'Receber e Dar Entrada no Estoque'}
                   </span>
                   <span className="block text-[11px] text-indigo-800/80">
-                    Ao receber a compra, registre a entrada no estoque e reserve para o projeto.
+                    Registra entrada, etiquetas físicas, reserva e libera material para a produção.
                   </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIsEntradaModalOpen(true)}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white shadow-2xs hover:bg-indigo-700 transition-colors cursor-pointer"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs hover:bg-emerald-700 transition-colors cursor-pointer"
                 >
                   <PackagePlus className="h-3.5 w-3.5" />
-                  <span>Dar entrada no estoque</span>
+                  <span>Receber</span>
                 </button>
               </div>
             )}
@@ -292,12 +443,13 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
                 <select
                   value={formData.status}
                   onChange={(e) => setFormData({ ...formData, status: e.target.value as StatusItemCompra })}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-slate-900"
+                  disabled={item.status === 'recebido'}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 disabled:bg-slate-100 focus:outline-none focus:border-slate-900"
                 >
                   <option value="a_solicitar">A solicitar</option>
                   <option value="solicitado">Solicitado</option>
                   <option value="comprado">Comprado</option>
-                  <option value="recebido">Recebido</option>
+                  {item.status === 'recebido' && <option value="recebido">Recebido</option>}
                   <option value="atendido_estoque">Atendido em Estoque</option>
                   <option value="cancelado">Cancelado</option>
                 </select>
@@ -387,6 +539,7 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
                 >
                   <option value="materia_prima">Matéria-Prima (Bloco / Aço)</option>
                   <option value="item_comercial">Item Comercial / Componente Padrão</option>
+                  <option value="reposicao">Reposição de Estoque</option>
                 </select>
               </div>
 
@@ -622,14 +775,14 @@ export const ItemCompraDetalhesDrawer: React.FC<ItemCompraDetalhesDrawerProps> =
         </form>
       </div>
 
-      {/* Modal de Dar Entrada no Estoque */}
+      {/* Modal de Receber e Dar Entrada no Estoque */}
       {isEntradaModalOpen && (
         <DarEntradaRecebimentoModal
           isOpen={isEntradaModalOpen}
           onClose={() => setIsEntradaModalOpen(false)}
           itemCompra={item}
           itensEstoque={itensEstoque}
-          onSuccess={(msg) => {
+          onSuccess={() => {
             setIsEntradaModalOpen(false);
             if (onRefresh) onRefresh();
             onClose();

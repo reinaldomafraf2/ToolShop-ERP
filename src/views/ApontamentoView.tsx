@@ -6,9 +6,10 @@ import {
   CentroCusto,
   OperacaoComDetalhes,
   ConfiguracoesSistema,
+  MaterialStatusComponente,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
-import { comprasService } from '../services/comprasService';
+import { avaliarLiberacaoOperacaoMaterial } from '../utils/materialStatus';
 import { Modal } from '../components/common/Modal';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
 import { EmptyState } from '../components/common/EmptyState';
@@ -36,6 +37,7 @@ import {
   Hash,
   FileText,
   BookOpen,
+  Lock,
 } from 'lucide-react';
 import { formatDateTimeBR, formatHours } from '../utils/formatters';
 
@@ -157,9 +159,9 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
   const [searchOp, setSearchOp] = useState('');
   const [maquinaFilter, setMaquinaFilter] = useState<string>('Todas');
 
-  // Configurações do sistema para verificação de avisos (ex.: material pendente)
+  // Configurações do sistema e status calculado de material por componente
   const [configuracoes, setConfiguracoes] = useState<ConfiguracoesSistema | null>(null);
-  const [materialRecebidoSet, setMaterialRecebidoSet] = useState<Set<string>>(new Set());
+  const [materialStatusCompMap, setMaterialStatusCompMap] = useState<Map<string, MaterialStatusComponente>>(new Map());
 
   // Estado do cronômetro em tempo real (segundos decorridos)
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -253,28 +255,26 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     loadOperacoesDisponiveis();
   }, [validApontamentos, selectedOperador?.id, loadOperacoesDisponiveis]);
 
-  // Carrega configurações e status de recebimento de materiais para avisos visuais
+  // Carrega configurações e status calculado de material por componente
   useEffect(() => {
     toolShopService.getConfiguracoes().then(setConfiguracoes).catch(console.warn);
-    comprasService
-      .getItensCompra()
-      .then((itens) => {
-        const recebidos = new Set<string>();
-        itens.forEach((it) => {
-          if (
-            it.tipo === 'materia_prima' &&
-            it.componente_id &&
-            (it.status === 'recebido' || it.status === 'atendido_estoque')
-          ) {
-            recebidos.add(it.componente_id);
-          }
+    toolShopService
+      .getProjetosComDetalhes()
+      .then((projs) => {
+        const nextMap = new Map<string, MaterialStatusComponente>();
+        projs.forEach((p) => {
+          p.componentes.forEach((c) => {
+            if (c.material_status) {
+              nextMap.set(c.id, c.material_status);
+            }
+          });
         });
-        setMaterialRecebidoSet(recebidos);
+        setMaterialStatusCompMap(nextMap);
       })
       .catch((err) =>
-        console.warn('Erro ao carregar status de matéria-prima para apontamento:', err)
+        console.warn('Erro ao carregar status de material dos componentes para apontamento:', err)
       );
-  }, []);
+  }, [validApontamentos]);
 
   // Histórico de apontamentos do dia do operador selecionado
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
@@ -480,10 +480,28 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
   };
 
   // Componente que renderiza um card de operação elegível
-  const renderOperationCard = (op: OperacaoComDetalhes) => (
+  const getAvaliacaoMaterialOp = (op: OperacaoComDetalhes) => {
+    const compId = op.componente_id || op.componente?.id || '';
+    const centro = op.centro_custo || op.maquina;
+    return avaliarLiberacaoOperacaoMaterial({
+      materialStatus: materialStatusCompMap.get(compId),
+      centroCustoCategoria: centro?.categoria || centro?.tipo,
+      componenteTipo: op.componente?.tipo,
+      cfg: configuracoes,
+    });
+  };
+
+  const renderOperationCard = (op: OperacaoComDetalhes) => {
+    const matAvaliacao = getAvaliacaoMaterialOp(op);
+
+    return (
     <div
       key={op.id}
-      className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-2xs transition-all hover:border-slate-300 md:flex-row md:items-center md:justify-between"
+      className={`flex flex-col gap-3 rounded-xl border p-4 shadow-2xs transition-all md:flex-row md:items-center md:justify-between ${
+        matAvaliacao.bloqueado
+          ? 'border-rose-200 bg-rose-50/30'
+          : 'border-slate-200 bg-white hover:border-slate-300'
+      }`}
     >
       <div className="space-y-1.5 min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
@@ -528,19 +546,24 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
             {op.status}
           </span>
 
-          {/* Alerta de Material Pendente (quando configurado no sistema) */}
-          {configuracoes?.avisar_operador_material_pendente &&
-            op.componente?.tipo !== 'comprado' &&
-            op.componente?.tipo !== 'estoque' &&
-            !materialRecebidoSet.has(op.componente_id || op.componente?.id || '') && (
-              <span
-                className="inline-flex items-center gap-1 rounded bg-amber-100 border border-amber-300 px-2 py-0.5 text-[10px] font-bold text-amber-900"
-                title="A matéria-prima desta peça ainda não consta como recebida no almoxarifado/compras"
-              >
-                <AlertTriangle className="h-3 w-3 text-amber-700 shrink-0" />
-                <span>Material não recebido</span>
-              </span>
-            )}
+          {/* Alerta ou Bloqueio de Material conforme configuração */}
+          {matAvaliacao.bloqueado ? (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-rose-100 border border-rose-300 px-2 py-0.5 text-[10px] font-bold text-rose-900"
+              title={matAvaliacao.motivo}
+            >
+              <Lock className="h-3 w-3 text-rose-700 shrink-0" />
+              <span>Bloqueado · {matAvaliacao.labelStatus}</span>
+            </span>
+          ) : matAvaliacao.avisar ? (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-amber-100 border border-amber-300 px-2 py-0.5 text-[10px] font-bold text-amber-900"
+              title={matAvaliacao.motivo}
+            >
+              <AlertTriangle className="h-3 w-3 text-amber-700 shrink-0" />
+              <span>{matAvaliacao.labelStatus}</span>
+            </span>
+          ) : null}
         </div>
 
         {/* Descrição e Sequência */}
@@ -646,15 +669,30 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
         <button
           type="button"
           onClick={() => handleIniciarApontamento(op)}
-          disabled={isSubmitting}
-          className="flex min-h-[50px] flex-1 md:flex-initial items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white shadow-xs transition-transform hover:bg-slate-800 active:scale-98"
+          disabled={isSubmitting || matAvaliacao.bloqueado}
+          title={matAvaliacao.bloqueado ? matAvaliacao.motivo : 'Iniciar apontamento nesta operação'}
+          className={`flex min-h-[50px] flex-1 md:flex-initial items-center justify-center gap-2 rounded-xl px-6 py-3 text-xs font-bold shadow-xs transition-transform ${
+            matAvaliacao.bloqueado
+              ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+              : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-98'
+          }`}
         >
-          <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
-          <span>Iniciar Apontamento</span>
+          {matAvaliacao.bloqueado ? (
+            <>
+              <Lock className="h-4 w-4 text-rose-500" />
+              <span>Aguardando Material</span>
+            </>
+          ) : (
+            <>
+              <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
+              <span>Iniciar Apontamento</span>
+            </>
+          )}
         </button>
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -1385,10 +1423,13 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                 Fechar Leitura
               </button>
 
-              {leituraInstrucoes.op && !activeApontamento && (
+              {leituraInstrucoes.op && !activeApontamento && (() => {
+                const modalMatAval = getAvaliacaoMaterialOp(leituraInstrucoes.op);
+                return (
                 <button
                   type="button"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || modalMatAval.bloqueado}
+                  title={modalMatAval.bloqueado ? modalMatAval.motivo : undefined}
                   onClick={() => {
                     const opToStart = leituraInstrucoes.op;
                     setLeituraInstrucoes(null);
@@ -1396,12 +1437,26 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                       handleIniciarApontamento(opToStart);
                     }
                   }}
-                  className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-slate-800 active:scale-98"
+                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold shadow-md ${
+                    modalMatAval.bloqueado
+                      ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                      : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-98'
+                  }`}
                 >
-                  <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
-                  <span>Iniciar Apontamento Desta Operação</span>
+                  {modalMatAval.bloqueado ? (
+                    <>
+                      <Lock className="h-4 w-4 text-rose-500" />
+                      <span>Material Pendente (Bloqueado)</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
+                      <span>Iniciar Apontamento Desta Operação</span>
+                    </>
+                  )}
                 </button>
-              )}
+                );
+              })()}
             </div>
           </div>
         </Modal>

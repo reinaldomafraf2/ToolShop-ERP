@@ -4,6 +4,8 @@ import {
   FirestoreMovimentoEstoqueRepository,
   FirestoreReservaEstoqueRepository,
   executeAtomicEstoqueOperation,
+  executeAtomicRecebimentoTransaction,
+  executeAtomicEstornoRecebimentoTransaction,
 } from '../repositories/estoqueRepository';
 import { toolShopService } from './toolShopService';
 import { comprasService } from './comprasService';
@@ -24,7 +26,10 @@ import {
   TipoControleEstoque,
   UnidadeMedidaEstoque,
   SugestaoEstoqueItem,
+  RecebimentoItemCompraRegistro,
+  PerfilUsuario,
 } from '../types';
+import { getQuantidadePendenteItem } from '../utils/materialStatus';
 import { generateUUID, DEFAULT_EMPRESA_ID } from '../utils/uuid';
 
 export interface RegistrarEntradaParams {
@@ -112,6 +117,15 @@ export class EstoqueService {
     prefixo: 'PE' | 'SOB' = 'PE',
     empresaId: string = DEFAULT_EMPRESA_ID
   ): Promise<string> {
+    const lista = await this.gerarProximasEtiquetas(prefixo, 1, empresaId);
+    return lista[0];
+  }
+
+  async gerarProximasEtiquetas(
+    prefixo: 'PE' | 'SOB' = 'PE',
+    quantidade: number = 1,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<string[]> {
     const unidades = await this.unidadeRepo.getAll(empresaId);
     const ano = new Date().getFullYear();
     const padrao = `${prefixo}-${ano}-`;
@@ -128,8 +142,20 @@ export class EstoqueService {
       }
     });
 
-    const proximo = maxNum + 1;
-    return `${padrao}${String(proximo).padStart(4, '0')}`;
+    const total = Math.max(1, Math.floor(quantidade));
+    const resultado: string[] = [];
+    for (let i = 1; i <= total; i++) {
+      resultado.push(`${padrao}${String(maxNum + i).padStart(4, '0')}`);
+    }
+    return resultado;
+  }
+
+  async findItemEstoqueByCodigo(
+    codigo: string,
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<ItemEstoque | null> {
+    if (!codigo || !codigo.trim()) return null;
+    return this.itemRepo.getByCodigo(codigo.trim().toUpperCase(), empresaId);
   }
 
   // =========================================================================
@@ -194,14 +220,22 @@ export class EstoqueService {
   async getUnidadesComDetalhes(
     empresaId: string = DEFAULT_EMPRESA_ID
   ): Promise<UnidadeEstoqueComDetalhes[]> {
-    const [unidades, itens, projetos] = await Promise.all([
+    const [unidades, itens, projetos, itensCompra, fornecedores] = await Promise.all([
       this.unidadeRepo.getAll(empresaId),
       this.itemRepo.getAll(empresaId),
       toolShopService.getProjetosComDetalhes(empresaId),
+      comprasService.getItensCompra(empresaId).catch(() => []),
+      comprasService.getFornecedores(empresaId).catch(() => []),
     ]);
 
     const itemMap = new Map<string, ItemEstoque>();
     itens.forEach((i) => itemMap.set(i.id, i));
+
+    const itemCompraMap = new Map<string, ItemCompra>();
+    itensCompra.forEach((ic) => itemCompraMap.set(ic.id, ic));
+
+    const fornecedorMap = new Map<string, string>();
+    fornecedores.forEach((f) => fornecedorMap.set(f.id, f.nome));
 
     const projetoMap = new Map<string, string>();
     const componenteMap = new Map<string, string>();
@@ -212,22 +246,31 @@ export class EstoqueService {
       });
     });
 
-    return unidades.map((u) => ({
-      ...u,
-      item: itemMap.get(u.item_id),
-      origem_projeto_codigo: u.origem_projeto_id ? projetoMap.get(u.origem_projeto_id) : undefined,
-      origem_componente_nome: u.origem_componente_id ? componenteMap.get(u.origem_componente_id) : undefined,
-    }));
+    return unidades.map((u) => {
+      const icOrigem = u.origem_item_compra_id ? itemCompraMap.get(u.origem_item_compra_id) : undefined;
+      return {
+        ...u,
+        item: itemMap.get(u.item_id),
+        origem_projeto_codigo: u.origem_projeto_id ? projetoMap.get(u.origem_projeto_id) : undefined,
+        origem_componente_nome: u.origem_componente_id ? componenteMap.get(u.origem_componente_id) : undefined,
+        numero_pedido: u.numero_pedido || icOrigem?.numero_pedido,
+        nota_fiscal: u.nota_fiscal || icOrigem?.nota_fiscal,
+        fornecedor_nome:
+          u.fornecedor_nome || (icOrigem?.fornecedor_id ? fornecedorMap.get(icOrigem.fornecedor_id) : undefined),
+      };
+    });
   }
 
   async getMovimentosComDetalhes(
     empresaId: string = DEFAULT_EMPRESA_ID
   ): Promise<MovimentoEstoqueComDetalhes[]> {
-    const [movimentos, itens, unidades, projetos] = await Promise.all([
+    const [movimentos, itens, unidades, projetos, itensCompra, fornecedores] = await Promise.all([
       this.movimentoRepo.getAll(empresaId),
       this.itemRepo.getAll(empresaId),
       this.unidadeRepo.getAll(empresaId),
       toolShopService.getProjetosComDetalhes(empresaId),
+      comprasService.getItensCompra(empresaId).catch(() => []),
+      comprasService.getFornecedores(empresaId).catch(() => []),
     ]);
 
     const itemMap = new Map<string, ItemEstoque>();
@@ -236,6 +279,12 @@ export class EstoqueService {
     const unidadeMap = new Map<string, UnidadeEstoque>();
     unidades.forEach((u) => unidadeMap.set(u.id, u));
 
+    const itemCompraMap = new Map<string, ItemCompra>();
+    itensCompra.forEach((ic) => itemCompraMap.set(ic.id, ic));
+
+    const fornecedorMap = new Map<string, string>();
+    fornecedores.forEach((f) => fornecedorMap.set(f.id, f.nome));
+
     const projetoMap = new Map<string, string>();
     const componenteMap = new Map<string, string>();
     projetos.forEach((p) => {
@@ -245,13 +294,20 @@ export class EstoqueService {
       });
     });
 
-    return movimentos.map((m) => ({
-      ...m,
-      item: itemMap.get(m.item_id),
-      unidade: m.unidade_id ? unidadeMap.get(m.unidade_id) : undefined,
-      projeto_codigo: m.projeto_id ? projetoMap.get(m.projeto_id) : undefined,
-      componente_nome: m.componente_id ? componenteMap.get(m.componente_id) : undefined,
-    }));
+    return movimentos.map((m) => {
+      const icOrigem = m.item_compra_id ? itemCompraMap.get(m.item_compra_id) : undefined;
+      return {
+        ...m,
+        item: itemMap.get(m.item_id),
+        unidade: m.unidade_id ? unidadeMap.get(m.unidade_id) : undefined,
+        projeto_codigo: m.projeto_id ? projetoMap.get(m.projeto_id) : undefined,
+        componente_nome: m.componente_id ? componenteMap.get(m.componente_id) : undefined,
+        numero_pedido: m.numero_pedido || icOrigem?.numero_pedido,
+        nota_fiscal: m.nota_fiscal || icOrigem?.nota_fiscal,
+        fornecedor_nome:
+          m.fornecedor_nome || (icOrigem?.fornecedor_id ? fornecedorMap.get(icOrigem.fornecedor_id) : undefined),
+      };
+    });
   }
 
   async getReservasComDetalhes(
@@ -972,8 +1028,287 @@ export class EstoqueService {
   }
 
   /**
-   * Recebimento gera entrada: dá entrada de um ItemCompra recebido no estoque,
-   * opcionalmente destina direto ao projeto com reserva automática e impede duplicidade.
+   * Recebimento atômico de ItemCompra:
+   * - Cria ou atualiza ItemEstoque (saldo e custo médio móvel)
+   * - Cria uma UnidadeEstoque por peça recebida (para unidade_fisica) com etiquetas geradas
+   * - Cria MovimentoEstoque imutável com origem (compra, pedido, NF, projeto)
+   * - Cria ReservaEstoque vinculada (quando destinarDiretoAoProjeto estiver marcado)
+   * - Atualiza ItemCompra (recebimento parcial mantém 'comprado' com 'Recebido X de Y', completo vira 'recebido')
+   * Tudo executado em uma única transação Firestore: se qualquer etapa falhar, nada é gravado.
+   */
+  async receberItemCompraAtomico(
+    params: {
+      itemCompraId: string;
+      itemId?: string;
+      novoItem?: {
+        codigo: string;
+        descricao: string;
+        categoria: CategoriaItemEstoque;
+        unidade: UnidadeMedidaEstoque;
+        especificacao: string;
+        tipo_controle: TipoControleEstoque;
+        localizacao_padrao?: string;
+      };
+      quantidadeRecebida: number;
+      dataRecebimento: string;
+      notaFiscal?: string;
+      localizacao: string;
+      custo_unitario?: number;
+      destinarDiretoAoProjeto?: boolean;
+      pecasFisicas?: Array<{
+        material?: string;
+        formato?: string;
+        comprimento_mm?: number;
+        largura_mm?: number;
+        espessura_mm?: number;
+        diametro_mm?: number;
+        peso_kg?: number;
+        lote_ou_certificado?: string;
+      }>;
+      usuarioId: string;
+      usuarioNome?: string;
+      observacoes?: string;
+    },
+    empresaId: string = DEFAULT_EMPRESA_ID
+  ): Promise<{
+    itemCompraAtualizado: ItemCompra;
+    itemEstoqueAtualizado: ItemEstoque;
+    movimento: MovimentoEstoque;
+    unidadesCriadas: UnidadeEstoque[];
+    reservasCriadas: ReservaEstoque[];
+  }> {
+    const itemCompra = await comprasService.getItemCompraById(params.itemCompraId);
+    if (!itemCompra) {
+      throw new Error(`Item de compra ID ${params.itemCompraId} não encontrado.`);
+    }
+
+    const pendente = getQuantidadePendenteItem(itemCompra);
+    if (
+      itemCompra.status === 'recebido' ||
+      itemCompra.status === 'atendido_estoque' ||
+      itemCompra.status === 'cancelado' ||
+      pendente <= 0
+    ) {
+      throw new Error('Este item de compra já foi totalmente recebido, atendido ou cancelado.');
+    }
+
+    const qtdRecebida = Number(params.quantidadeRecebida);
+    if (!Number.isFinite(qtdRecebida) || qtdRecebida <= 0) {
+      throw new Error('Informe uma quantidade recebida válida maior que zero.');
+    }
+    if (qtdRecebida > pendente + 0.0001) {
+      throw new Error(
+        `A quantidade recebida (${qtdRecebida}) não pode ser maior que a quantidade pendente (${pendente}).`
+      );
+    }
+
+    let existingItem: ItemEstoque | null = null;
+    let novoItemObj: ItemEstoque | undefined;
+    let targetItemId = params.itemId;
+
+    if (targetItemId) {
+      existingItem = await this.itemRepo.getById(targetItemId);
+      if (!existingItem) {
+        throw new Error('Item de estoque selecionado não encontrado.');
+      }
+    } else {
+      if (!params.novoItem) {
+        throw new Error('Selecione um item de estoque existente ou confirme a criação de um novo item.');
+      }
+      const codigoNorm = params.novoItem.codigo.trim().toUpperCase();
+      if (!codigoNorm) {
+        throw new Error('Informe o código do novo item de estoque.');
+      }
+      const duplicado = await this.itemRepo.getByCodigo(codigoNorm, empresaId);
+      if (duplicado) {
+        throw new Error(`Já existe um item de estoque cadastrado com o código "${codigoNorm}". Selecione-o na lista.`);
+      }
+      targetItemId = generateUUID();
+      novoItemObj = {
+        id: targetItemId,
+        empresa_id: empresaId,
+        codigo: codigoNorm,
+        descricao: params.novoItem.descricao.trim(),
+        categoria: params.novoItem.categoria,
+        unidade: params.novoItem.unidade,
+        especificacao: params.novoItem.especificacao.trim(),
+        tipo_controle: params.novoItem.tipo_controle,
+        localizacao_padrao: params.novoItem.localizacao_padrao?.trim() || params.localizacao.trim(),
+        saldo: 0,
+        ativo: true,
+        criado_em: new Date().toISOString(),
+      };
+    }
+
+    const tipoControle = existingItem?.tipo_controle || novoItemObj?.tipo_controle || 'quantidade';
+    const fornecedor = itemCompra.fornecedor_id
+      ? await comprasService.getFornecedorById(itemCompra.fornecedor_id).catch(() => null)
+      : null;
+
+    const agoraIso = new Date().toISOString();
+    const dataRec = params.dataRecebimento || agoraIso.split('T')[0];
+    const nfLimpa = params.notaFiscal?.trim() || itemCompra.nota_fiscal?.trim() || undefined;
+    const destinar = Boolean(
+      params.destinarDiretoAoProjeto && itemCompra.projeto_id && itemCompra.componente_id
+    );
+
+    const novasUnidades: UnidadeEstoque[] = [];
+    if (tipoControle === 'unidade_fisica') {
+      const pecasInput: NonNullable<typeof params.pecasFisicas> =
+        params.pecasFisicas && params.pecasFisicas.length > 0
+          ? params.pecasFisicas
+          : Array.from({ length: Math.max(1, Math.round(qtdRecebida)) }, () => ({}));
+
+      const etiquetas = await this.gerarProximasEtiquetas('PE', pecasInput.length, empresaId);
+      pecasInput.forEach((peca, idx) => {
+        novasUnidades.push({
+          id: generateUUID(),
+          empresa_id: empresaId,
+          item_id: targetItemId!,
+          etiqueta: etiquetas[idx],
+          material: peca.material?.trim() || undefined,
+          formato: peca.formato?.trim() || 'BLOCO',
+          comprimento_mm: peca.comprimento_mm,
+          largura_mm: peca.largura_mm,
+          espessura_mm: peca.espessura_mm,
+          diametro_mm: peca.diametro_mm,
+          peso_kg: peca.peso_kg,
+          custo_unitario: params.custo_unitario,
+          lote_ou_certificado: peca.lote_ou_certificado?.trim() || undefined,
+          localizacao: params.localizacao.trim() || 'Almoxarifado',
+          origem: 'compra',
+          origem_projeto_id: itemCompra.projeto_id,
+          origem_componente_id: itemCompra.componente_id,
+          origem_item_compra_id: itemCompra.id,
+          numero_pedido: itemCompra.numero_pedido,
+          nota_fiscal: nfLimpa,
+          fornecedor_nome: fornecedor?.nome,
+          status: destinar ? 'reservada' : 'disponivel',
+          observacoes: nfLimpa ? `NF ${nfLimpa}` : undefined,
+          criado_em: agoraIso,
+        });
+      });
+    }
+
+    const movId = generateUUID();
+    const custoTotalMov =
+      params.custo_unitario !== undefined && params.custo_unitario >= 0
+        ? Number((qtdRecebida * params.custo_unitario).toFixed(2))
+        : undefined;
+
+    const tagsTxt =
+      novasUnidades.length > 0
+        ? ` | Etiquetas: ${novasUnidades.map((u) => u.etiqueta).join(', ')}`
+        : '';
+    const origemTxt = [
+      itemCompra.numero_pedido ? `Pedido ${itemCompra.numero_pedido}` : null,
+      nfLimpa ? `NF ${nfLimpa}` : null,
+      fornecedor?.nome ? `Forn: ${fornecedor.nome}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    const obsFinal = [
+      params.observacoes?.trim() || `Recebimento de compra (${itemCompra.descricao})`,
+      origemTxt || null,
+    ]
+      .filter(Boolean)
+      .join(' — ') + tagsTxt;
+
+    const movimento: MovimentoEstoque = {
+      id: movId,
+      empresa_id: empresaId,
+      item_id: targetItemId,
+      unidade_id: novasUnidades.length === 1 ? novasUnidades[0].id : undefined,
+      tipo: 'entrada',
+      quantidade: qtdRecebida,
+      data_hora: agoraIso,
+      usuario_id: params.usuarioId,
+      usuario_nome: params.usuarioNome,
+      projeto_id: itemCompra.projeto_id,
+      componente_id: itemCompra.componente_id,
+      item_compra_id: itemCompra.id,
+      numero_pedido: itemCompra.numero_pedido,
+      nota_fiscal: nfLimpa,
+      fornecedor_nome: fornecedor?.nome,
+      motivo: 'compra',
+      custo_unitario: params.custo_unitario,
+      custo_total: custoTotalMov,
+      observacoes: obsFinal,
+    };
+
+    const novasReservas: ReservaEstoque[] = [];
+    if (destinar) {
+      if (novasUnidades.length > 0) {
+        novasUnidades.forEach((u) => {
+          novasReservas.push({
+            id: generateUUID(),
+            empresa_id: empresaId,
+            item_id: targetItemId!,
+            unidade_id: u.id,
+            quantidade: 1,
+            projeto_id: itemCompra.projeto_id,
+            componente_id: itemCompra.componente_id,
+            status: 'ativa',
+            criado_em: agoraIso,
+          });
+        });
+      } else {
+        novasReservas.push({
+          id: generateUUID(),
+          empresa_id: empresaId,
+          item_id: targetItemId!,
+          quantidade: qtdRecebida,
+          projeto_id: itemCompra.projeto_id,
+          componente_id: itemCompra.componente_id,
+          status: 'ativa',
+          criado_em: agoraIso,
+        });
+      }
+    }
+
+    const registroRecebimento: RecebimentoItemCompraRegistro = {
+      id: generateUUID(),
+      data_recebimento: dataRec,
+      quantidade: qtdRecebida,
+      nota_fiscal: nfLimpa,
+      item_estoque_id: targetItemId,
+      movimento_id: movId,
+      unidade_ids: novasUnidades.map((u) => u.id),
+      etiquetas: novasUnidades.map((u) => u.etiqueta),
+      reserva_ids: novasReservas.map((r) => r.id),
+      destinado_projeto: destinar,
+      usuario_id: params.usuarioId,
+      usuario_nome: params.usuarioNome,
+      criado_em: agoraIso,
+    };
+
+    const result = await executeAtomicRecebimentoTransaction({
+      empresaId,
+      itemCompraId: itemCompra.id,
+      novoItemEstoque: novoItemObj,
+      existingItemEstoqueId: existingItem?.id,
+      quantidadeRecebida: qtdRecebida,
+      valorUnitarioEntrada: params.custo_unitario,
+      novasUnidades,
+      movimento,
+      novasReservas,
+      dataRecebimento: dataRec,
+      notaFiscal: nfLimpa,
+      registroRecebimento,
+    });
+
+    return {
+      itemCompraAtualizado: result.itemCompraAtualizado,
+      itemEstoqueAtualizado: result.itemEstoqueAtualizado,
+      movimento: result.movimentoCriado,
+      unidadesCriadas: result.unidadesCriadas,
+      reservasCriadas: result.reservasCriadas,
+    };
+  }
+
+  /**
+   * Wrapper de retrocompatibilidade para chamadores existentes
    */
   async darEntradaPorRecebimento(
     params: {
@@ -1008,74 +1343,213 @@ export class EstoqueService {
     },
     empresaId: string = DEFAULT_EMPRESA_ID
   ): Promise<{ movimento: MovimentoEstoque; novaUnidade?: UnidadeEstoque; reserva?: ReservaEstoque }> {
-    const itemCompra = await comprasService.getItemCompraById(params.itemCompraId);
-    if (!itemCompra) {
-      throw new Error(`Item de compra ID ${params.itemCompraId} não encontrado.`);
-    }
-
-    if (itemCompra.movimento_entrada_id) {
-      throw new Error('Este item de compra já teve sua entrada registrada no estoque anteriormente.');
-    }
-
-    let targetItemId = params.itemId;
-    if (!targetItemId) {
-      if (!params.novoItem) {
-        throw new Error('Selecione um item de estoque existente ou forneça dados para cadastrar novo item.');
-      }
-      const criado = await this.criarItem(
-        {
-          ...params.novoItem,
-          saldo: 0,
-          ativo: true,
-        },
-        empresaId
-      );
-      targetItemId = criado.id;
-    }
-
-    const { movimento, novaUnidade } = await this.registrarEntrada(
+    const res = await this.receberItemCompraAtomico(
       {
-        itemId: targetItemId,
-        quantidade: params.quantidade,
+        itemCompraId: params.itemCompraId,
+        itemId: params.itemId,
+        novoItem: params.novoItem,
+        quantidadeRecebida: params.quantidade,
+        dataRecebimento: new Date().toISOString().split('T')[0],
+        localizacao: params.localizacao,
+        custo_unitario: params.custo_unitario,
+        destinarDiretoAoProjeto: params.destinarDiretoAoProjeto,
+        pecasFisicas: params.dadosUnidadeFisica ? [params.dadosUnidadeFisica] : undefined,
         usuarioId: params.usuarioId,
         usuarioNome: params.usuarioNome,
-        motivo: 'compra',
-        itemCompraId: params.itemCompraId,
-        custo_unitario: params.custo_unitario,
-        dadosUnidadeFisica: params.dadosUnidadeFisica
-          ? {
-              ...params.dadosUnidadeFisica,
-              localizacao: params.localizacao,
-              custo_unitario: params.custo_unitario,
-            }
-          : undefined,
         observacoes: params.observacoes,
       },
       empresaId
     );
+    return {
+      movimento: res.movimento,
+      novaUnidade: res.unidadesCriadas[0],
+      reserva: res.reservasCriadas[0],
+    };
+  }
 
-    let reservaCriada: ReservaEstoque | undefined;
-    if (params.destinarDiretoAoProjeto && itemCompra.projeto_id && itemCompra.componente_id) {
-      reservaCriada = await this.criarReserva(
-        {
-          itemId: targetItemId,
-          unidadeId: novaUnidade?.id,
-          quantidade: params.quantidade,
-          projetoId: itemCompra.projeto_id,
-          componenteId: itemCompra.componente_id,
-        },
-        empresaId
+  /**
+   * Estornar recebimento (somente Gerente ou Admin):
+   * Gera movimentos inversos e restaura o ItemCompra se o material ainda não foi retirado para produção.
+   */
+  async estornarRecebimentoItemCompra(
+    itemCompraId: string,
+    usuario: { id: string; nome: string; perfil: PerfilUsuario },
+    empresaId: string = DEFAULT_EMPRESA_ID,
+    motivo?: string
+  ): Promise<ItemCompra> {
+    if (usuario.perfil !== 'gerente' && usuario.perfil !== 'admin') {
+      throw new Error('Apenas usuários com perfil Gerente ou Admin podem estornar recebimentos.');
+    }
+
+    const [itemCompra, unidades, reservas, movimentos, cfg] = await Promise.all([
+      comprasService.getItemCompraById(itemCompraId),
+      this.unidadeRepo.getAll(empresaId),
+      this.reservaRepo.getAll(empresaId),
+      this.movimentoRepo.getAll(empresaId),
+      toolShopService.getConfiguracoes(empresaId),
+    ]);
+
+    if (!itemCompra) {
+      throw new Error('Item de compra não encontrado.');
+    }
+
+    const historicoAtivo = (itemCompra.historico_recebimentos || []).filter((r) => !r.estornado);
+    const qtdTotalRecebida =
+      historicoAtivo.length > 0
+        ? historicoAtivo.reduce((acc, r) => acc + Number(r.quantidade || 0), 0)
+        : Number(
+            itemCompra.quantidade_recebida ??
+              (itemCompra.status === 'recebido' ? itemCompra.quantidade : 0)
+          );
+
+    if (qtdTotalRecebida <= 0 && !itemCompra.movimento_entrada_id && historicoAtivo.length === 0) {
+      throw new Error('Este item não possui recebimento no estoque para estornar.');
+    }
+
+    // Coleta todas as unidades criadas pelo recebimento deste item
+    const unidadeIdsSet = new Set<string>();
+    historicoAtivo.forEach((r) => (r.unidade_ids || []).forEach((id) => unidadeIdsSet.add(id)));
+    unidades
+      .filter((u) => u.origem_item_compra_id === itemCompra.id && u.status !== 'descartada')
+      .forEach((u) => unidadeIdsSet.add(u.id));
+
+    const unidadesRelacionadas = unidades.filter((u) => unidadeIdsSet.has(u.id));
+    const unidadeConsumida = unidadesRelacionadas.find((u) => u.status === 'consumida');
+    if (unidadeConsumida) {
+      throw new Error(
+        `Não é possível estornar: a etiqueta ${unidadeConsumida.etiqueta} já foi retirada para produção.`
       );
     }
 
-    await comprasService.updateItemCompra(itemCompra.id, {
-      status: 'recebido',
-      data_recebimento: new Date().toISOString().split('T')[0],
-      movimento_entrada_id: movimento.id,
-      item_estoque_id: targetItemId,
-    });
+    // Coleta reservas criadas pelo recebimento
+    const reservaIdsSet = new Set<string>();
+    historicoAtivo.forEach((r) => (r.reserva_ids || []).forEach((id) => reservaIdsSet.add(id)));
+    if (reservaIdsSet.size === 0 && itemCompra.componente_id && itemCompra.item_estoque_id) {
+      reservas
+        .filter(
+          (r) =>
+            r.item_id === itemCompra.item_estoque_id &&
+            r.componente_id === itemCompra.componente_id &&
+            r.status !== 'cancelada'
+        )
+        .forEach((r) => reservaIdsSet.add(r.id));
+    }
 
-    return { movimento, novaUnidade, reserva: reservaCriada };
+    const reservasRelacionadas = reservas.filter((r) => reservaIdsSet.has(r.id));
+    if (reservasRelacionadas.some((r) => r.status === 'consumida')) {
+      throw new Error('Não é possível estornar: a reserva do material já foi consumida pela produção.');
+    }
+
+    // Verifica movimentos de saída para produção relacionados
+    const movProducaoUnidade = movimentos.find(
+      (m) =>
+        m.tipo === 'saida' &&
+        m.motivo === 'producao' &&
+        m.unidade_id &&
+        unidadeIdsSet.has(m.unidade_id)
+    );
+    if (movProducaoUnidade) {
+      throw new Error('Não é possível estornar: há saída registrada para produção com este material.');
+    }
+
+    // Para itens controlados por quantidade com componente vinculado, impede estorno se houve retirada de produção após a entrada
+    if (
+      itemCompra.componente_id &&
+      itemCompra.item_estoque_id &&
+      unidadesRelacionadas.length === 0
+    ) {
+      const movEntrada = movimentos.find(
+        (m) =>
+          m.item_compra_id === itemCompra.id ||
+          m.id === itemCompra.movimento_entrada_id
+      );
+      const entradaMs = movEntrada ? new Date(movEntrada.data_hora).getTime() : 0;
+      const saidaProducaoComp = movimentos.find(
+        (m) =>
+          m.tipo === 'saida' &&
+          m.motivo === 'producao' &&
+          m.item_id === itemCompra.item_estoque_id &&
+          m.componente_id === itemCompra.componente_id &&
+          new Date(m.data_hora).getTime() >= entradaMs
+      );
+      if (saidaProducaoComp) {
+        throw new Error(
+          'Não é possível estornar: este material já foi retirado para produção do componente.'
+        );
+      }
+    }
+
+    // Constrói os movimentos inversos imutáveis
+    const agoraIso = new Date().toISOString();
+    const estornoMovimentos: Array<{
+      itemEstoqueId: string;
+      quantidadeEstornada: number;
+      movimentoInverso: MovimentoEstoque;
+    }> = [];
+
+    if (historicoAtivo.length > 0) {
+      for (const rec of historicoAtivo) {
+        estornoMovimentos.push({
+          itemEstoqueId: rec.item_estoque_id,
+          quantidadeEstornada: Number(rec.quantidade),
+          movimentoInverso: {
+            id: generateUUID(),
+            empresa_id: empresaId,
+            item_id: rec.item_estoque_id,
+            tipo: 'saida',
+            quantidade: Number(rec.quantidade),
+            data_hora: agoraIso,
+            usuario_id: usuario.id,
+            usuario_nome: usuario.nome,
+            projeto_id: itemCompra.projeto_id,
+            componente_id: itemCompra.componente_id,
+            item_compra_id: itemCompra.id,
+            numero_pedido: itemCompra.numero_pedido,
+            nota_fiscal: rec.nota_fiscal || itemCompra.nota_fiscal,
+            movimento_estornado_id: rec.movimento_id,
+            motivo: 'devolucao',
+            observacoes: `Estorno de recebimento (${itemCompra.descricao})${rec.nota_fiscal ? ` · NF ${rec.nota_fiscal}` : ''}${motivo ? ` · Motivo: ${motivo}` : ''}`,
+          },
+        });
+      }
+    } else if (itemCompra.item_estoque_id) {
+      estornoMovimentos.push({
+        itemEstoqueId: itemCompra.item_estoque_id,
+        quantidadeEstornada: qtdTotalRecebida,
+        movimentoInverso: {
+          id: generateUUID(),
+          empresa_id: empresaId,
+          item_id: itemCompra.item_estoque_id,
+          tipo: 'saida',
+          quantidade: qtdTotalRecebida,
+          data_hora: agoraIso,
+          usuario_id: usuario.id,
+          usuario_nome: usuario.nome,
+          projeto_id: itemCompra.projeto_id,
+          componente_id: itemCompra.componente_id,
+          item_compra_id: itemCompra.id,
+          numero_pedido: itemCompra.numero_pedido,
+          nota_fiscal: itemCompra.nota_fiscal,
+          movimento_estornado_id: itemCompra.movimento_entrada_id,
+          motivo: 'devolucao',
+          observacoes: `Estorno de recebimento (${itemCompra.descricao})${itemCompra.nota_fiscal ? ` · NF ${itemCompra.nota_fiscal}` : ''}${motivo ? ` · Motivo: ${motivo}` : ''}`,
+        },
+      });
+    } else {
+      throw new Error(
+        'Este recebimento não possui vínculo de estoque registrado para gerar movimento inverso.'
+      );
+    }
+
+    return executeAtomicEstornoRecebimentoTransaction({
+      empresaId,
+      itemCompraId: itemCompra.id,
+      estornoMovimentos,
+      unidadeIdsParaDescartar: Array.from(unidadeIdsSet),
+      reservaIdsParaCancelar: Array.from(reservaIdsSet),
+      usuarioNome: usuario.nome,
+      permitirSaldoNegativo: cfg?.permitir_saldo_negativo,
+    });
   }
 
   /**
