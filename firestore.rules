@@ -28,7 +28,9 @@ service cloud.firestore {
     }
 
     function isSignedIn() {
-      return request.auth != null;
+      return request.auth != null &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email == 'reinaldo.mafraf2@gmail.com';
     }
 
     function isSystemAdmin() {
@@ -157,18 +159,30 @@ service cloud.firestore {
 
     // --- 8. USUÁRIOS ---
     function isValidUsuario(data) {
-      return data.id is string && data.id.size() <= 128 &&
-             data.empresa_id is string && data.empresa_id.size() <= 128 &&
-             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 150 &&
-             data.email is string && data.email.size() > 0 && data.email.size() <= 150 &&
-             data.perfil in ['admin', 'gerente', 'lider', 'operador'] &&
-             data.ativo is bool;
+      return (!('id' in data) || (data.id is string && data.id.size() <= 128)) &&
+             (!('empresa_id' in data) || (data.empresa_id is string && data.empresa_id.size() <= 128)) &&
+             (!('nome' in data) || (data.nome is string && data.nome.size() > 0 && data.nome.size() <= 150)) &&
+             (!('perfil' in data) || data.perfil in ['admin', 'gerente', 'lider', 'operador']) &&
+             (!('ativo' in data) || data.ativo is bool) &&
+             (!('email' in data) || data.email == null || (data.email is string && data.email.size() <= 150)) &&
+             (!('matricula' in data) || data.matricula == null || (data.matricula is string && data.matricula.size() <= 50)) &&
+             (!('operador_id' in data) || data.operador_id == null || (data.operador_id is string && data.operador_id.size() <= 128)) &&
+             (!('ultimo_login' in data) || data.ultimo_login == null || data.ultimo_login is string) &&
+             (!('ultimo_acesso' in data) || data.ultimo_acesso == null || data.ultimo_acesso is string) &&
+             (!('senha_hash' in data) || data.senha_hash == null || data.senha_hash is string) &&
+             (!('senha_salt' in data) || data.senha_salt == null || data.senha_salt is string) &&
+             (!('senha_iter' in data) || data.senha_iter == null || data.senha_iter is number) &&
+             (!('pin_hash' in data) || data.pin_hash == null || data.pin_hash is string) &&
+             (!('pin_salt' in data) || data.pin_salt == null || data.pin_salt is string) &&
+             (!('pin_iter' in data) || data.pin_iter == null || data.pin_iter is number) &&
+             (!('criado_em' in data) || data.criado_em == null || data.criado_em is string) &&
+             (!('atualizado_em' in data) || data.atualizado_em == null || data.atualizado_em is string);
     }
 
     match /usuarios/{usuarioId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && isValidId(usuarioId) && isValidUsuario(incoming());
-      allow update: if isSignedIn() && isValidId(usuarioId) && isValidUsuario(incoming()) && incoming().id == existing().id;
+      allow update: if isSignedIn() && isValidId(usuarioId) && isValidUsuario(incoming());
       allow delete: if isSignedIn() && isValidId(usuarioId);
     }
 
@@ -226,8 +240,11 @@ service cloud.firestore {
     function isValidConfiguracoes(data) {
       return data.id is string && data.id.size() <= 128 &&
              data.empresa_id is string && data.empresa_id.size() <= 128 &&
-             data.restringir_postos is bool &&
-             data.liberar_apenas_proxima_operacao is bool;
+             (!('restringir_postos' in data) || data.restringir_postos is bool) &&
+             (!('liberar_apenas_proxima_operacao' in data) || data.liberar_apenas_proxima_operacao is bool) &&
+             (!('avisar_operador_material_pendente' in data) || data.avisar_operador_material_pendente is bool) &&
+             (!('permitir_saldo_negativo' in data) || data.permitir_saldo_negativo is bool) &&
+             (!('dias_alerta_reserva_parada' in data) || data.dias_alerta_reserva_parada is number);
     }
 
     match /configuracoes/{configId} {
@@ -235,6 +252,113 @@ service cloud.firestore {
       allow create: if isSignedIn() && isValidId(configId) && isValidConfiguracoes(incoming());
       allow update: if isSignedIn() && isValidId(configId) && isValidConfiguracoes(incoming());
       allow delete: if isSystemAdmin() && isValidId(configId);
+    }
+
+    // --- 13. FORNECEDORES ---
+    function isValidFornecedor(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.nome is string && data.nome.size() > 0 && data.nome.size() <= 200 &&
+             data.ativo is bool;
+    }
+
+    match /fornecedores/{fornecedorId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(fornecedorId) && isValidFornecedor(incoming());
+      allow update: if isSignedIn() && isValidId(fornecedorId) && isValidFornecedor(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(fornecedorId);
+    }
+
+    // --- 14. ITENS DE COMPRA ---
+    function isValidItemCompra(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             (!('projeto_id' in data) || data.projeto_id == null || (data.projeto_id is string && data.projeto_id.size() <= 128)) &&
+             (!('componente_id' in data) || data.componente_id == null || (data.componente_id is string && data.componente_id.size() <= 128)) &&
+             (!('item_estoque_id' in data) || data.item_estoque_id == null || (data.item_estoque_id is string && data.item_estoque_id.size() <= 128)) &&
+             (!('movimento_entrada_id' in data) || data.movimento_entrada_id == null || (data.movimento_entrada_id is string && data.movimento_entrada_id.size() <= 128)) &&
+             data.tipo in ['materia_prima', 'item_comercial', 'reposicao'] &&
+             data.status in ['a_solicitar', 'solicitado', 'comprado', 'recebido', 'cancelado', 'atendido_estoque'] &&
+             data.quantidade is number && data.quantidade > 0 &&
+             data.unidade in ['un', 'kg', 'm', 'pç'];
+    }
+
+    match /itens_compra/{itemCompraId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(itemCompraId) && isValidItemCompra(incoming());
+      allow update: if isSignedIn() && isValidId(itemCompraId) && isValidItemCompra(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(itemCompraId);
+    }
+
+    // --- 15. ITENS DE ESTOQUE ---
+    function isValidItemEstoque(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.codigo is string && data.codigo.size() > 0 && data.codigo.size() <= 100 &&
+             data.descricao is string && data.descricao.size() > 0 && data.descricao.size() <= 300 &&
+             data.categoria in ['materia_prima', 'item_comercial', 'consumivel', 'outro'] &&
+             data.unidade in ['un', 'kg', 'm', 'pç'] &&
+             data.tipo_controle in ['quantidade', 'unidade_fisica'] &&
+             data.saldo is number &&
+             data.ativo is bool;
+    }
+
+    match /itens_estoque/{itemId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(itemId) && isValidItemEstoque(incoming());
+      allow update: if isSignedIn() && isValidId(itemId) && isValidItemEstoque(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(itemId);
+    }
+
+    // --- 16. UNIDADES FÍSICAS DE ESTOQUE ---
+    function isValidUnidadeEstoque(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.item_id is string && data.item_id.size() <= 128 &&
+             data.etiqueta is string && data.etiqueta.size() > 0 && data.etiqueta.size() <= 100 &&
+             data.status in ['disponivel', 'reservada', 'consumida', 'descartada'] &&
+             data.origem in ['compra', 'sobra', 'ajuste'];
+    }
+
+    match /unidades_estoque/{unidadeId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(unidadeId) && isValidUnidadeEstoque(incoming());
+      allow update: if isSignedIn() && isValidId(unidadeId) && isValidUnidadeEstoque(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(unidadeId);
+    }
+
+    // --- 17. MOVIMENTOS DE ESTOQUE (IMUTÁVEL: nunca são editados nem apagados) ---
+    function isValidMovimentoEstoque(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.item_id is string && data.item_id.size() <= 128 &&
+             data.tipo in ['entrada', 'saida', 'ajuste'] &&
+             data.quantidade is number && data.quantidade > 0 &&
+             data.motivo in ['compra', 'producao', 'inventario', 'perda', 'devolucao', 'outro'] &&
+             data.data_hora is string && data.data_hora.size() > 0;
+    }
+
+    match /movimentos_estoque/{movimentoId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(movimentoId) && isValidMovimentoEstoque(incoming());
+      // IMUTÁVEL: Correções devem ser feitas exclusivamente via movimento de estorno/ajuste
+      allow update, delete: if false;
+    }
+
+    // --- 18. RESERVAS DE ESTOQUE ---
+    function isValidReservaEstoque(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.empresa_id is string && data.empresa_id.size() <= 128 &&
+             data.item_id is string && data.item_id.size() <= 128 &&
+             data.quantidade is number && data.quantidade > 0 &&
+             data.status in ['ativa', 'consumida', 'cancelada'];
+    }
+
+    match /reservas_estoque/{reservaId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(reservaId) && isValidReservaEstoque(incoming());
+      allow update: if isSignedIn() && isValidId(reservaId) && isValidReservaEstoque(incoming()) && incoming().id == existing().id;
+      allow delete: if isSignedIn() && isValidId(reservaId);
     }
   }
 }

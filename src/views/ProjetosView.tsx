@@ -13,12 +13,23 @@ import {
   ModeloComponente,
   ModeloOperacao,
   TipoComponente,
+  ConfiguracoesSistema,
+  ItemCompra,
+  StatusItemCompra,
+  ItemEstoqueComDetalhes,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
+import { comprasService } from '../services/comprasService';
+import { estoqueService } from '../services/estoqueService';
+import { ProjetoComprasTab } from '../components/compras/ProjetoComprasTab';
+import { RetirarMaterialModal } from '../components/projetos/RetirarMaterialModal';
+import { RegistrarSobraModal } from '../components/estoque/RegistrarSobraModal';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDeleteModal } from '../components/common/ConfirmDeleteModal';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
 import { EmptyState } from '../components/common/EmptyState';
+import { FolhaProcessosModal } from '../components/common/FolhaProcessosModal';
+import { calcularPesoBloco, formatarPesoKg } from '../utils/weightCalculator';
 import { exportProjetosToCSV } from '../utils/csvExport';
 import { useAuth } from '../auth/AuthContext';
 import {
@@ -67,6 +78,8 @@ import {
   Send,
   Truck,
   PackageCheck,
+  ShoppingCart,
+  Scissors,
 } from 'lucide-react';
 import { formatDateBR, formatHours, formatCurrencyBRL } from '../utils/formatters';
 
@@ -103,7 +116,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   maquinas,
   onRefresh,
 }) => {
-  const { user, can } = useAuth();
+  const { user, perfil, can } = useAuth();
   const canCreate = can('criar', 'projetos');
   const canEdit = can('editar', 'projetos');
   const canDelete = can('excluir', 'projetos');
@@ -121,6 +134,101 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   // Navegação: null = lista de projetos, string = ID do projeto em detalhe
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
+  // Aba ativa dentro do projeto selecionado: 'componentes' | 'compras'
+  const [abaProjeto, setAbaProjeto] = useState<'componentes' | 'compras'>('componentes');
+  const [materialStatusMap, setMaterialStatusMap] = useState<
+    Map<string, { status: StatusItemCompra; atrasado: boolean; item: ItemCompra }>
+  >(new Map());
+
+  // Atualiza mapa de status de materiais ao selecionar projeto
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setMaterialStatusMap(new Map());
+      setAbaProjeto('componentes');
+      setCustoMaterialEstoque(0);
+      return;
+    }
+    comprasService
+      .getMapStatusMaterialComponentes(selectedProjectId)
+      .then((map) => setMaterialStatusMap(map))
+      .catch((err) => console.error('Erro ao carregar status de material:', err));
+
+    carregarDadosEstoqueProjeto(selectedProjectId);
+  }, [selectedProjectId]);
+
+  // Estados para integração Estoque & Produção
+  const [custoMaterialEstoque, setCustoMaterialEstoque] = useState<number>(0);
+  const [retirarMaterialComponente, setRetirarMaterialComponente] = useState<ComponenteComOperacoes | null>(null);
+  const [sobraComponente, setSobraComponente] = useState<ComponenteComOperacoes | null>(null);
+  const [itensEstoqueDisponiveis, setItensEstoqueDisponiveis] = useState<ItemEstoqueComDetalhes[]>([]);
+
+  const carregarDadosEstoqueProjeto = async (projId: string) => {
+    try {
+      const [custo, itens] = await Promise.all([
+        estoqueService.getCustoMaterialProjeto(projId),
+        estoqueService.getItensComDetalhes(),
+      ]);
+      setCustoMaterialEstoque(custo);
+      setItensEstoqueDisponiveis(itens);
+    } catch (err) {
+      console.warn('Erro ao carregar dados de estoque do projeto:', err);
+    }
+  };
+
+  const renderMaterialStatusBadge = (componenteId: string) => {
+    const mat = materialStatusMap.get(componenteId);
+    if (!mat) {
+      return (
+        <span className="inline-block rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
+          Material: Pendente
+        </span>
+      );
+    }
+
+    if (mat.atrasado) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[9px] font-bold text-rose-700">
+          <AlertTriangle className="h-2.5 w-2.5 text-rose-600 shrink-0" />
+          <span>Material: Atrasado</span>
+        </span>
+      );
+    }
+
+    switch (mat.status) {
+      case 'recebido':
+        return (
+          <span className="inline-block rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-800">
+            Material: Recebido
+          </span>
+        );
+      case 'comprado':
+        return (
+          <span className="inline-block rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold text-amber-900">
+            Material: Comprado
+          </span>
+        );
+      case 'solicitado':
+        return (
+          <span className="inline-block rounded border border-blue-300 bg-blue-50 px-1.5 py-0.5 text-[9px] font-semibold text-blue-800">
+            Material: Solicitado
+          </span>
+        );
+      case 'atendido_estoque':
+        return (
+          <span className="inline-block rounded border border-teal-300 bg-teal-50 px-1.5 py-0.5 text-[9px] font-semibold text-teal-800">
+            Material: Estoque
+          </span>
+        );
+      case 'a_solicitar':
+      default:
+        return (
+          <span className="inline-block rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
+            Material: Pendente
+          </span>
+        );
+    }
+  };
+
   // Estados de Filtro e Busca na Lista
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'Todos' | StatusProjeto>('Todos');
@@ -130,11 +238,20 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   // Componentes expandidos no Detalhe do Projeto (map de componenteId -> boolean)
   const [expandedComponents, setExpandedComponents] = useState<Record<string, boolean>>({});
 
+  // --- CONFIGURAÇÃO DA EMPRESA (FOLHA DE PROCESSOS) ---
+  const [configEmpresa, setConfigEmpresa] = useState<ConfiguracoesSistema | null>(null);
+
+  useEffect(() => {
+    toolShopService.getConfiguracoes().then(setConfigEmpresa).catch(console.warn);
+  }, []);
+
   // --- MODAIS DE PROJETO ---
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjetoComDetalhes | null>(null);
   const [projectForm, setProjectForm] = useState({
     codigo: '',
+    orcamento_codigo: '',
+    planejador: '',
     cliente_id: '',
     descricao: '',
     prazo: '',
@@ -153,6 +270,11 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     nome: '',
     quantidade: '1',
     material: '',
+    formato: 'BLOCO',
+    dimensoes: '',
+    peso_kg: '',
+    peso_calculado: false,
+    tratamento: '',
     observacoes: '',
     status: 'Pendente' as StatusComponente,
     modeloOrigemId: '',
@@ -185,6 +307,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   } | null>(null);
   const [operationForm, setOperationForm] = useState({
     descricao: '',
+    instrucoes: '',
     maquina_id: '',
     horas_estimadas: '',
     sequencia: '',
@@ -196,6 +319,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     observacoes: '',
   });
   const [operationErrors, setOperationErrors] = useState<{ [key: string]: string }>({});
+  const [expandedInstructions, setExpandedInstructions] = useState<Record<string, boolean>>({});
 
   // Modais de Envio e Retorno para Centros Terceirizados
   const [envioModal, setEnvioModal] = useState<{
@@ -515,6 +639,8 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     setEditingProject(null);
     setProjectForm({
       codigo: `PRJ-${new Date().getFullYear()}-${String(projetos.length + 1).padStart(3, '0')}`,
+      orcamento_codigo: '',
+      planejador: '',
       cliente_id: clientes[0]?.id || '',
       descricao: '',
       prazo: '',
@@ -529,6 +655,8 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     setEditingProject(proj);
     setProjectForm({
       codigo: proj.codigo,
+      orcamento_codigo: proj.orcamento_codigo || '',
+      planejador: proj.planejador || '',
       cliente_id: proj.cliente_id,
       descricao: proj.descricao,
       prazo: proj.prazo,
@@ -556,6 +684,8 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       if (editingProject) {
         await toolShopService.updateProjeto(editingProject.id, {
           codigo: projectForm.codigo.trim(),
+          orcamento_codigo: projectForm.orcamento_codigo.trim() || undefined,
+          planejador: projectForm.planejador.trim() || undefined,
           cliente_id: projectForm.cliente_id,
           descricao: projectForm.descricao.trim(),
           prazo: projectForm.prazo,
@@ -565,6 +695,8 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       } else {
         const novo = await toolShopService.createProjeto({
           codigo: projectForm.codigo.trim(),
+          orcamento_codigo: projectForm.orcamento_codigo.trim() || undefined,
+          planejador: projectForm.planejador.trim() || undefined,
           cliente_id: projectForm.cliente_id,
           descricao: projectForm.descricao.trim(),
           prazo: projectForm.prazo,
@@ -590,6 +722,11 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       nome: '',
       quantidade: '1',
       material: 'Aço P20 Beneficiado',
+      formato: 'BLOCO',
+      dimensoes: '',
+      peso_kg: '',
+      peso_calculado: false,
+      tratamento: '',
       observacoes: '',
       status: 'Pendente',
       modeloOrigemId: '',
@@ -605,6 +742,11 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       nome: comp.nome,
       quantidade: String(comp.quantidade || 1),
       material: comp.material,
+      formato: comp.formato || 'BLOCO',
+      dimensoes: comp.dimensoes || '',
+      peso_kg: comp.peso_kg !== undefined ? String(comp.peso_kg).replace('.', ',') : '',
+      peso_calculado: comp.peso_calculado ?? false,
+      tratamento: comp.tratamento || '',
       observacoes: comp.observacoes || '',
       status: comp.status,
       modeloOrigemId: comp.modelo_origem_id || '',
@@ -613,17 +755,76 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     setIsComponentModalOpen(true);
   };
 
+  const handleComponentDimensoesChange = (val: string) => {
+    setComponentForm((prev) => {
+      const calc = calcularPesoBloco(prev.formato, val);
+      if (calc !== null) {
+        return {
+          ...prev,
+          dimensoes: val,
+          peso_kg: String(calc).replace('.', ','),
+          peso_calculado: true,
+        };
+      }
+      return {
+        ...prev,
+        dimensoes: val,
+      };
+    });
+  };
+
+  const handleComponentFormatoChange = (formatoVal: string) => {
+    setComponentForm((prev) => {
+      const calc = calcularPesoBloco(formatoVal, prev.dimensoes);
+      if (calc !== null) {
+        return {
+          ...prev,
+          formato: formatoVal,
+          peso_kg: String(calc).replace('.', ','),
+          peso_calculado: true,
+        };
+      }
+      return {
+        ...prev,
+        formato: formatoVal,
+      };
+    });
+  };
+
   const handleSelectModeloInForm = (modeloId: string) => {
     const mod = modelosBiblioteca.find((m) => m.id === modeloId);
     if (!mod) return;
-    setComponentForm((prev) => ({
-      ...prev,
-      codigo: mod.codigo,
-      nome: mod.nome,
-      material: mod.material || prev.material,
-      observacoes: mod.observacoes || prev.observacoes,
-      modeloOrigemId: mod.id,
-    }));
+    setComponentForm((prev) => {
+      const formato = mod.formato || prev.formato;
+      const dimensoes = mod.dimensoes || prev.dimensoes;
+      let peso_kg = prev.peso_kg;
+      let peso_calculado = prev.peso_calculado;
+
+      if (mod.peso_kg !== undefined) {
+        peso_kg = String(mod.peso_kg).replace('.', ',');
+        peso_calculado = mod.peso_calculado ?? false;
+      } else if (formato === 'BLOCO' && dimensoes) {
+        const calc = calcularPesoBloco(formato, dimensoes);
+        if (calc !== null) {
+          peso_kg = String(calc).replace('.', ',');
+          peso_calculado = true;
+        }
+      }
+
+      return {
+        ...prev,
+        codigo: mod.codigo,
+        nome: mod.nome,
+        material: mod.material || prev.material,
+        formato,
+        dimensoes,
+        peso_kg,
+        peso_calculado,
+        tratamento: mod.tratamento || prev.tratamento,
+        observacoes: mod.observacoes || prev.observacoes,
+        modeloOrigemId: mod.id,
+      };
+    });
   };
 
   const handleSubmitComponent = async (e: React.FormEvent) => {
@@ -646,12 +847,25 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
 
     setIsSubmitting(true);
     try {
+      let parsedPeso: number | undefined = undefined;
+      if (componentForm.peso_kg.trim()) {
+        const num = parseFloat(componentForm.peso_kg.replace(',', '.'));
+        if (!isNaN(num) && num >= 0) {
+          parsedPeso = Math.round(num * 100) / 100;
+        }
+      }
+
       if (editingComponent.componente) {
         await toolShopService.updateComponente(editingComponent.componente.id, {
           codigo: componentForm.codigo.trim() || undefined,
           nome: componentForm.nome.trim(),
           quantidade: qtdNum,
           material: componentForm.material.trim(),
+          formato: componentForm.formato || undefined,
+          dimensoes: componentForm.dimensoes.trim() || undefined,
+          peso_kg: parsedPeso,
+          peso_calculado: componentForm.peso_calculado,
+          tratamento: componentForm.tratamento.trim() || undefined,
           observacoes: componentForm.observacoes.trim() || undefined,
           status: componentForm.status,
         });
@@ -663,6 +877,11 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
           nome: componentForm.nome.trim(),
           quantidade: qtdNum,
           material: componentForm.material.trim(),
+          formato: componentForm.formato || undefined,
+          dimensoes: componentForm.dimensoes.trim() || undefined,
+          peso_kg: parsedPeso,
+          peso_calculado: componentForm.peso_calculado,
+          tratamento: componentForm.tratamento.trim() || undefined,
           observacoes: componentForm.observacoes.trim() || undefined,
           status: componentForm.status,
           modelo_origem_id: componentForm.modeloOrigemId || undefined,
@@ -701,6 +920,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                   maquina_id: maq.id,
                   sequencia: op.sequencia,
                   descricao: op.descricao,
+                  instrucoes: op.instrucoes || undefined,
                   horas_estimadas: op.horas_estimadas ?? 0,
                   prazo_dias: op.prazo_dias ?? maq.prazo_padrao_dias,
                   fornecedor: op.fornecedor ?? maq.fornecedor_nome,
@@ -838,6 +1058,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             ? modeloFinal.operacoes.map((op) => ({
                 sequencia: op.sequencia,
                 descricao: op.descricao,
+                instrucoes: op.instrucoes || undefined,
                 tipo_maquina: op.tipo_maquina,
                 horas_estimadas: op.horas_estimadas ?? 0,
               }))
@@ -931,6 +1152,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     setEditingOperation({ componenteId: componente.id });
     setOperationForm({
       descricao: '',
+      instrucoes: '',
       maquina_id: firstCentro?.id || '',
       horas_estimadas: isTerc ? '' : '4,0',
       sequencia: String(nextSeq),
@@ -951,6 +1173,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     setEditingOperation({ componenteId, operacao: op });
     setOperationForm({
       descricao: op.descricao,
+      instrucoes: op.instrucoes || '',
       maquina_id: ccId,
       horas_estimadas:
         op.horas_estimadas !== undefined && op.horas_estimadas !== null && op.horas_estimadas > 0
@@ -984,6 +1207,11 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     const errors: { [key: string]: string } = {};
     if (!operationForm.descricao.trim()) errors.descricao = 'Descrição é obrigatória.';
     if (!operationForm.maquina_id) errors.maquina_id = 'Selecione um centro de custo.';
+
+    const canEditInstrucoes = perfil === 'gerente' || perfil === 'admin';
+    if (operationForm.instrucoes && operationForm.instrucoes.length > 5000) {
+      errors.instrucoes = 'As instruções de execução não podem exceder 5.000 caracteres.';
+    }
 
     const selectedCentro = maquinas.find((m) => m.id === operationForm.maquina_id);
     const isTerceirizado = selectedCentro?.origem === 'terceirizado';
@@ -1047,6 +1275,9 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     try {
       const payload: Partial<Operacao> = {
         descricao: operationForm.descricao.trim(),
+        instrucoes: canEditInstrucoes
+          ? operationForm.instrucoes.trim() || undefined
+          : editingOperation.operacao?.instrucoes,
         centro_custo_id: operationForm.maquina_id,
         maquina_id: operationForm.maquina_id,
         horas_estimadas: horasNum,
@@ -1066,6 +1297,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
         await toolShopService.createOperacao({
           componente_id: editingOperation.componenteId,
           descricao: payload.descricao!,
+          instrucoes: payload.instrucoes,
           centro_custo_id: payload.centro_custo_id!,
           maquina_id: payload.maquina_id,
           horas_estimadas: payload.horas_estimadas,
@@ -1345,6 +1577,30 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                 </div>
               )}
 
+              {/* Custo de Material Retirado do Estoque */}
+              {canViewCustos ? (
+                <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-3.5">
+                  <span className="block text-[11px] font-medium text-amber-900">
+                    Custo de Material (Estoque)
+                  </span>
+                  <span className="mt-1 block font-mono text-xl font-bold text-amber-950">
+                    {formatCurrencyBRL(custoMaterialEstoque)}
+                  </span>
+                  <span className="mt-1 block text-[11px] text-amber-700">
+                    Material retirado p/ produção
+                  </span>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
+                  <span className="block text-[11px] font-medium text-slate-500">
+                    Custo de Material
+                  </span>
+                  <span className="mt-1 block text-xs font-semibold text-slate-500">
+                    Restrito à Gerência & Admin
+                  </span>
+                </div>
+              )}
+
               {/* Custo Total Acumulado */}
               {canViewCustos ? (
                 <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3.5">
@@ -1352,10 +1608,10 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                     Custo Total Acumulado
                   </span>
                   <span className="mt-1 block font-mono text-xl font-bold text-emerald-900">
-                    {formatCurrencyBRL(selectedProject.custoRealAcumulado)}
+                    {formatCurrencyBRL((selectedProject.custoRealAcumulado || 0) + (custoMaterialEstoque || 0))}
                   </span>
                   <span className="mt-1 block text-[11px] text-emerald-700">
-                    Interno + Terceiros
+                    Interno + Terceiros + Material
                   </span>
                 </div>
               ) : (
@@ -1401,9 +1657,63 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             </div>
           </div>
 
-          {/* Lista de Componentes do Projeto */}
-          <div className="space-y-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Abas de Navegação Interna do Projeto */}
+          <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+            <button
+              type="button"
+              onClick={() => setAbaProjeto('componentes')}
+              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl transition-colors ${
+                abaProjeto === 'componentes'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Layers className="h-4 w-4" />
+              <span>Componentes & Roteiro</span>
+              <span
+                className={`ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full ${
+                  abaProjeto === 'componentes'
+                    ? 'bg-slate-800 text-slate-200'
+                    : 'bg-slate-200 text-slate-600'
+                }`}
+              >
+                {selectedProject.componentes.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setAbaProjeto('compras')}
+              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl transition-colors ${
+                abaProjeto === 'compras'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <ShoppingCart className="h-4 w-4" />
+              <span>Compras & Materiais</span>
+            </button>
+          </div>
+
+          {abaProjeto === 'compras' ? (
+            <ProjetoComprasTab
+              projeto={selectedProject}
+              onRefresh={() => {
+                onRefresh();
+                if (selectedProjectId) {
+                  comprasService
+                    .getMapStatusMaterialComponentes(selectedProjectId)
+                    .then((map) => setMaterialStatusMap(map))
+                    .catch((err) =>
+                      console.error('Erro ao atualizar status de material:', err)
+                    );
+                }
+              }}
+            />
+          ) : (
+            /* Lista de Componentes do Projeto */
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
                   Componentes & Roteiro de Usinagem ({selectedProject.componentes.length})
@@ -1955,18 +2265,23 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                                       </td>
 
                                       {/* 8. Status */}
-                                      <td className="py-2 px-2.5 w-28">
-                                        <span
-                                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
-                                            comp.status === 'Concluído'
-                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                              : comp.status === 'Em produção'
-                                              ? 'border-blue-200 bg-blue-50 text-blue-700'
-                                              : 'border-slate-200 bg-slate-100 text-slate-700'
-                                          }`}
-                                        >
-                                          {comp.status}
-                                        </span>
+                                      <td className="py-2 px-2.5 w-32">
+                                        <div className="flex flex-col gap-1 items-start">
+                                          <span
+                                            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                              comp.status === 'Concluído'
+                                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                : comp.status === 'Em produção'
+                                                ? 'border-blue-200 bg-blue-50 text-blue-700'
+                                                : 'border-slate-200 bg-slate-100 text-slate-700'
+                                            }`}
+                                          >
+                                            {comp.status}
+                                          </span>
+                                          {comp.tipo !== 'comprado' && comp.tipo !== 'estoque' && (
+                                            renderMaterialStatusBadge(comp.id)
+                                          )}
+                                        </div>
                                       </td>
 
                                       {/* 9. Nº de operações com alerta para fabricado sem operações */}
@@ -2018,6 +2333,28 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                                               title="Folha de Processos técnica desta peça"
                                             >
                                               <FileText className="h-3.5 w-3.5" />
+                                            </button>
+                                          )}
+
+                                          {/* Retirar material do estoque */}
+                                          <button
+                                            type="button"
+                                            onClick={() => setRetirarMaterialComponente(comp)}
+                                            className="p-1.5 rounded-md text-amber-600 hover:text-amber-800 hover:bg-amber-50 transition-colors"
+                                            title="Retirar material do estoque para produção"
+                                          >
+                                            <PackageCheck className="h-3.5 w-3.5" />
+                                          </button>
+
+                                          {/* Registrar sobra de usinagem */}
+                                          {(!comp.tipo || comp.tipo === 'fabricado') && (
+                                            <button
+                                              type="button"
+                                              onClick={() => setSobraComponente(comp)}
+                                              className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                                              title="Registrar sobra de usinagem"
+                                            >
+                                              <Scissors className="h-3.5 w-3.5" />
                                             </button>
                                           )}
 
@@ -2144,18 +2481,23 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                               </td>
 
                               {/* 8. Status */}
-                              <td className="py-2 px-2.5 w-28">
-                                <span
-                                  className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
-                                    comp.status === 'Concluído'
-                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                      : comp.status === 'Em produção'
-                                      ? 'border-blue-200 bg-blue-50 text-blue-700'
-                                      : 'border-slate-200 bg-slate-100 text-slate-700'
-                                  }`}
-                                >
-                                  {comp.status}
-                                </span>
+                              <td className="py-2 px-2.5 w-32">
+                                <div className="flex flex-col gap-1 items-start">
+                                  <span
+                                    className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                      comp.status === 'Concluído'
+                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                        : comp.status === 'Em produção'
+                                        ? 'border-blue-200 bg-blue-50 text-blue-700'
+                                        : 'border-slate-200 bg-slate-100 text-slate-700'
+                                    }`}
+                                  >
+                                    {comp.status}
+                                  </span>
+                                  {comp.tipo !== 'comprado' && comp.tipo !== 'estoque' && (
+                                    renderMaterialStatusBadge(comp.id)
+                                  )}
+                                </div>
                               </td>
 
                               {/* 9. Nº de operações com alerta para fabricado sem operações */}
@@ -2207,6 +2549,28 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                                       title="Folha de Processos técnica desta peça"
                                     >
                                       <FileText className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+
+                                  {/* Retirar material do estoque */}
+                                  <button
+                                    type="button"
+                                    onClick={() => setRetirarMaterialComponente(comp)}
+                                    className="p-1.5 rounded-md text-amber-600 hover:text-amber-800 hover:bg-amber-50 transition-colors"
+                                    title="Retirar material do estoque para produção"
+                                  >
+                                    <PackageCheck className="h-3.5 w-3.5" />
+                                  </button>
+
+                                  {/* Registrar sobra de usinagem */}
+                                  {(!comp.tipo || comp.tipo === 'fabricado') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setSobraComponente(comp)}
+                                      className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                                      title="Registrar sobra de usinagem"
+                                    >
+                                      <Scissors className="h-3.5 w-3.5" />
                                     </button>
                                   )}
 
@@ -2394,6 +2758,31 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                         >
                           <Edit2 className="h-3.5 w-3.5 text-slate-500" />
                           <span>Editar Componente</span>
+                        </button>
+                      )}
+
+                      {/* Retirar material do estoque para produção */}
+                      <button
+                        type="button"
+                        onClick={() => setRetirarMaterialComponente(selectedComponentForDetail)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition-colors shadow-2xs"
+                        title="Baixar matéria-prima ou item das reservas do projeto ou estoque geral"
+                      >
+                        <PackageCheck className="h-3.5 w-3.5 text-amber-700" />
+                        <span>Retirar Material</span>
+                      </button>
+
+                      {/* Registrar sobra aproveitável de usinagem */}
+                      {(!selectedComponentForDetail.tipo ||
+                        selectedComponentForDetail.tipo === 'fabricado') && (
+                        <button
+                          type="button"
+                          onClick={() => setSobraComponente(selectedComponentForDetail)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                          title="Cadastrar retalho ou sobra resultante da usinagem"
+                        >
+                          <Scissors className="h-3.5 w-3.5 text-slate-600" />
+                          <span>Registrar Sobra</span>
                         </button>
                       )}
                     </div>
@@ -2584,7 +2973,41 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                                     return (
                                       <>
                                         <td className="py-2.5 px-3 font-medium text-slate-900">
-                                          <div>{op.descricao}</div>
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span>{op.descricao}</span>
+                                            {op.instrucoes && (
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setExpandedInstructions((prev) => ({
+                                                    ...prev,
+                                                    [op.id]: !prev[op.id],
+                                                  }))
+                                                }
+                                                className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors"
+                                                title="Esta operação possui instruções de execução detalhadas"
+                                              >
+                                                <FileText className="h-3 w-3 text-indigo-600" />
+                                                <span>
+                                                  {expandedInstructions[op.id]
+                                                    ? 'Ocultar Instruções'
+                                                    : 'Ver Instruções'}
+                                                </span>
+                                              </button>
+                                            )}
+                                          </div>
+
+                                          {/* Instruções de execução expandidas */}
+                                          {op.instrucoes && expandedInstructions[op.id] && (
+                                            <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 font-mono text-[11px] leading-relaxed text-slate-800 whitespace-pre-wrap select-text shadow-2xs">
+                                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
+                                                <FileText className="h-3 w-3 text-indigo-500" />
+                                                <span>Instruções de Execução (Plano de Fabricação):</span>
+                                              </div>
+                                              {op.instrucoes}
+                                            </div>
+                                          )}
+
                                           {isTerc && (
                                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
                                               <span className="font-semibold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
@@ -2783,6 +3206,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
               </div>
             )}
           </div>
+          )}
         </div>
       ) : (
         /* ========================================================================= */
@@ -3145,6 +3569,38 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-slate-700">
+                Cód. Orçamento (opcional)
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: ORC-2026-482"
+                value={projectForm.orcamento_codigo}
+                onChange={(e) =>
+                  setProjectForm({ ...projectForm, orcamento_codigo: e.target.value })
+                }
+                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 font-mono text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700">
+                Planejador Técnico (opcional)
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Eng. Roberto Santos"
+                value={projectForm.planejador}
+                onChange={(e) =>
+                  setProjectForm({ ...projectForm, planejador: e.target.value })
+                }
+                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700">
                 Prazo de Entrega <span className="text-rose-500">*</span>
               </label>
               <input
@@ -3329,13 +3785,90 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             </div>
           </div>
 
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700">
+                Formato do Bruto
+              </label>
+              <select
+                value={componentForm.formato}
+                onChange={(e) => handleComponentFormatoChange(e.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+              >
+                <option value="BLOCO">BLOCO</option>
+                <option value="REDONDO">REDONDO</option>
+                <option value="TUBO">TUBO</option>
+                <option value="CHAPA">CHAPA</option>
+                <option value="PERFIL">PERFIL</option>
+                <option value="OUTRO">OUTRO</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700">
+                Dimensões do Bruto (mm)
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: 605 X 689 X 65"
+                value={componentForm.dimensoes}
+                onChange={(e) => handleComponentDimensoesChange(e.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 font-mono text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+              />
+              <span className="mt-0.5 block text-[10px] text-slate-400">
+                Padrão: A X B X C (mm)
+              </span>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Peso Unitário (kg)
+                </label>
+                {componentForm.peso_calculado && (
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                    Calculado
+                  </span>
+                )}
+              </div>
+              <input
+                type="text"
+                placeholder="Ex: 212,70"
+                value={componentForm.peso_kg}
+                onChange={(e) =>
+                  setComponentForm({
+                    ...componentForm,
+                    peso_kg: e.target.value,
+                    peso_calculado: false,
+                  })
+                }
+                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 font-mono text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700">
+              Tratamento Térmico / Superficial (opcional)
+            </label>
+            <input
+              type="text"
+              placeholder="Ex: Niquelação Química, Têmpera e Revenimento 52 HRC..."
+              value={componentForm.tratamento}
+              onChange={(e) =>
+                setComponentForm({ ...componentForm, tratamento: e.target.value })
+              }
+              className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+            />
+          </div>
+
           <div>
             <label className="block text-xs font-semibold text-slate-700">
               Observações Técnicas
             </label>
             <textarea
               rows={2}
-              placeholder="Instruções de usinagem, tolerâncias, tratamento térmico..."
+              placeholder="Instruções de usinagem, tolerâncias, acabamentos..."
               value={componentForm.observacoes}
               onChange={(e) => setComponentForm({ ...componentForm, observacoes: e.target.value })}
               className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
@@ -3655,6 +4188,57 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
               </div>
             );
           })()}
+
+          {/* Campo de Instruções de Execução (Plano de Fabricação) */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                <FileText className="h-4 w-4 text-indigo-600" />
+                <span>Instruções de Execução (Plano de Fabricação)</span>
+              </label>
+              <span
+                className={`font-mono text-[11px] font-semibold ${
+                  operationForm.instrucoes.length > 5000
+                    ? 'text-rose-600 font-bold'
+                    : operationForm.instrucoes.length > 4500
+                    ? 'text-amber-600'
+                    : 'text-slate-400'
+                }`}
+              >
+                {operationForm.instrucoes.length.toLocaleString('pt-BR')} / 5.000 caracteres
+              </span>
+            </div>
+
+            <p className="text-[11px] text-slate-500">
+              Texto longo multilinha preservando quebras de linha e seções técnicas, visível para o operador no tablet antes e durante a usinagem.
+            </p>
+
+            <textarea
+              rows={6}
+              disabled={perfil !== 'gerente' && perfil !== 'admin'}
+              value={operationForm.instrucoes}
+              onChange={(e) => {
+                setOperationForm({ ...operationForm, instrucoes: e.target.value });
+                if (operationErrors.instrucoes) {
+                  setOperationErrors({ ...operationErrors, instrucoes: '' });
+                }
+              }}
+              placeholder={`Exemplo de conteúdo com seções e quebras de linha:\n\nLADO SUPERIOR:\n#CALÇO#\n_facear;\n_usinar contorno pronto;\n_furação de rosca e passagens pronto;`}
+              className={`w-full rounded-xl border p-3 font-mono text-xs text-slate-800 shadow-2xs whitespace-pre-wrap leading-relaxed focus:outline-none ${
+                perfil !== 'gerente' && perfil !== 'admin'
+                  ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed'
+                  : 'bg-white border-slate-300 focus:border-slate-900'
+              }`}
+            />
+            {operationErrors.instrucoes && (
+              <p className="text-xs text-rose-600 font-medium">{operationErrors.instrucoes}</p>
+            )}
+            {perfil !== 'gerente' && perfil !== 'admin' && (
+              <p className="text-[11px] text-amber-700 italic">
+                * Apenas usuários com perfil Gerente ou Administrador podem editar as instruções de execução.
+              </p>
+            )}
+          </div>
 
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
             <button
@@ -4442,206 +5026,61 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       })()}
 
       {/* ========================================================================= */}
-      {/* MODAL 6: FOLHA DE PROCESSOS TÉCNICA (PROJETO OU COMPONENTE)               */}
+      {/* MODAL 6: FOLHA DE PROCESSOS TÉCNICA (PLANO DE FABRICAÇÃO A4 P&B)          */}
       {/* ========================================================================= */}
       {folhaProcessoTarget && (
-        <Modal
+        <FolhaProcessosModal
           isOpen={Boolean(folhaProcessoTarget)}
           onClose={() => setFolhaProcessoTarget(null)}
-          title={`Folha de Processos Técnica: ${folhaProcessoTarget.projeto.codigo}`}
-          maxWidth="5xl"
-        >
-          <div className="space-y-5 text-xs text-slate-800 print:p-0">
-            {/* Cabeçalho Oficial da Ferramentaria */}
-            <div className="rounded-xl border-2 border-slate-900 p-4 bg-white shadow-2xs">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-200 pb-3 gap-2">
-                <div>
-                  <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">
-                    ToolShop ERP • Folha de Processos de Usinagem
-                  </span>
-                  <h2 className="text-base font-bold text-slate-900">
-                    {folhaProcessoTarget.tipo === 'componente' && folhaProcessoTarget.componente
-                      ? folhaProcessoTarget.componente.nome
-                      : folhaProcessoTarget.projeto.descricao}
-                  </h2>
-                </div>
-                <div className="text-right">
-                  <span className="inline-block font-mono text-sm font-bold text-slate-900 bg-slate-100 px-2.5 py-1 rounded border border-slate-300">
-                    {folhaProcessoTarget.projeto.codigo}
-                  </span>
-                  <div className="text-[11px] text-slate-500 font-semibold mt-0.5">
-                    Cliente: {folhaProcessoTarget.projeto.cliente?.nome || '—'}
-                  </div>
-                </div>
-              </div>
+          tipo={folhaProcessoTarget.tipo}
+          projeto={folhaProcessoTarget.projeto}
+          componente={folhaProcessoTarget.componente}
+          configEmpresa={configEmpresa}
+        />
+      )}
 
-              {(() => {
-                const componentesNaFolha = (
-                  folhaProcessoTarget.tipo === 'componente' && folhaProcessoTarget.componente
-                    ? [folhaProcessoTarget.componente]
-                    : folhaProcessoTarget.projeto.componentes
-                ).filter((c) => !c.tipo || c.tipo === 'fabricado');
+      {/* ========================================================================= */}
+      {/* MODAL 7: RETIRADA DE MATERIAL DO ESTOQUE PARA PRODUÇÃO                     */}
+      {/* ========================================================================= */}
+      {retirarMaterialComponente && selectedProject && (
+        <RetirarMaterialModal
+          isOpen={Boolean(retirarMaterialComponente)}
+          onClose={() => setRetirarMaterialComponente(null)}
+          projeto={selectedProject}
+          componente={retirarMaterialComponente}
+          onSuccess={(msg) => {
+            setRetirarMaterialComponente(null);
+            showFeedback('success', msg);
+            onRefresh();
+            if (selectedProject?.id) {
+              carregarDadosEstoqueProjeto(selectedProject.id);
+            }
+          }}
+        />
+      )}
 
-                const totalHorasFolha = componentesNaFolha.reduce(
-                  (acc, c) =>
-                    acc +
-                    c.operacoes.reduce((opAcc, o) => opAcc + (o.horas_estimadas || 0), 0),
-                  0
-                );
-
-                return (
-                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">Prazo de Entrega:</span>
-                      <strong className="text-slate-900 font-mono">
-                        {formatDateBR(folhaProcessoTarget.projeto.prazo)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">Status Geral:</span>
-                      <strong className="text-slate-900">{folhaProcessoTarget.projeto.status}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">Peças a Usinar:</span>
-                      <strong className="text-slate-900">
-                        {componentesNaFolha.length}{' '}
-                        {componentesNaFolha.length === 1 ? 'item fabricado' : 'itens fabricados'}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">Carga Horária Total:</span>
-                      <strong className="text-amber-700 font-mono">
-                        {formatHours(totalHorasFolha)}
-                      </strong>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Relação de Componentes e Operações (apenas peças fabricadas) */}
-            <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
-              {(folhaProcessoTarget.tipo === 'componente' && folhaProcessoTarget.componente
-                ? [folhaProcessoTarget.componente]
-                : folhaProcessoTarget.projeto.componentes
-              ).filter((c) => !c.tipo || c.tipo === 'fabricado').map((comp, compIdx) => (
-                <div key={comp.id} className="rounded-xl border border-slate-300 overflow-hidden">
-                  <div className="bg-slate-100 p-3 flex flex-wrap items-center justify-between border-b border-slate-300">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-slate-500">#{compIdx + 1}</span>
-                      {comp.codigo && (
-                        <span className="font-mono text-xs font-bold text-slate-800 bg-white px-2 py-0.5 rounded border border-slate-300">
-                          {comp.codigo}
-                        </span>
-                      )}
-                      <strong className="text-xs text-slate-900">{comp.nome}</strong>
-                    </div>
-
-                    <div className="flex items-center gap-3 text-[11px]">
-                      <span>
-                        Qtd: <strong>{comp.quantidade || 1} un.</strong>
-                      </span>
-                      <span>•</span>
-                      <span>
-                        Material: <strong>{comp.material}</strong>
-                      </span>
-                    </div>
-                  </div>
-
-                  {comp.observacoes && (
-                    <div className="bg-amber-50/50 px-3 py-1.5 text-[11px] text-slate-600 border-b border-slate-200">
-                      <strong>Obs:</strong> {comp.observacoes}
-                    </div>
-                  )}
-
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-600 border-b border-slate-200 font-semibold">
-                      <tr>
-                        <th className="py-2 px-3 w-16 text-center">Seq</th>
-                        <th className="py-2 px-3">Operação / Roteiro</th>
-                        <th className="py-2 px-3 w-40">Centro de Custo</th>
-                        <th className="py-2 px-3 w-28 text-right">Horas Est.</th>
-                        <th className="py-2 px-3 w-28 text-right">Horas Apont.</th>
-                        <th className="py-2 px-3 w-28 text-center">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {comp.operacoes.map((op) => (
-                        <tr key={op.id}>
-                          <td className="py-2 px-3 text-center font-mono font-bold text-slate-500">
-                            {op.sequencia}
-                          </td>
-                          <td className="py-2 px-3 font-medium text-slate-900">{op.descricao}</td>
-                          <td className="py-2 px-3 text-slate-600">
-                            {(() => {
-                              const cc = op.centro_custo || op.maquina;
-                              const nome = cc?.nome || '—';
-                              if (cc?.origem === 'terceirizado') {
-                                const forn = op.fornecedor || cc.fornecedor_nome || 'Especializado';
-                                return (
-                                  <div>
-                                    <span className="font-semibold text-slate-900">{nome}</span>
-                                    <span className="block text-[10px] text-purple-700 italic font-medium">
-                                      (Terceiro: {forn})
-                                    </span>
-                                  </div>
-                                );
-                              }
-                              return <span>{nome}</span>;
-                            })()}
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
-                            {(op.centro_custo || op.maquina)?.origem === 'terceirizado'
-                              ? `${op.prazo_dias ?? (op.centro_custo || op.maquina)?.prazo_padrao_dias ?? 5}d`
-                              : formatHours(op.horas_estimadas)}
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono text-slate-700">
-                            {(op.centro_custo || op.maquina)?.origem === 'terceirizado' ? '—' : formatHours(op.horasApontadas || 0)}
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                op.status === 'Concluída' || op.status === 'Retornada'
-                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                  : op.status === 'Enviada'
-                                  ? 'bg-purple-50 text-purple-700 border border-purple-200'
-                                  : op.status === 'Em andamento'
-                                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                  : 'bg-slate-100 text-slate-600 border border-slate-200'
-                              }`}
-                            >
-                              {op.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
-            </div>
-
-            {/* Ações da Folha de Processos */}
-            <div className="flex justify-between items-center pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs"
-              >
-                <Printer className="h-3.5 w-3.5 text-slate-600" />
-                <span>Imprimir Folha de Processos</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setFolhaProcessoTarget(null)}
-                className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </Modal>
+      {/* ========================================================================= */}
+      {/* MODAL 8: REGISTRO DE SOBRA APROVEITÁVEL DE USINAGEM                        */}
+      {/* ========================================================================= */}
+      {sobraComponente && selectedProject && (
+        <RegistrarSobraModal
+          isOpen={Boolean(sobraComponente)}
+          onClose={() => setSobraComponente(null)}
+          itensDisponiveis={itensEstoqueDisponiveis}
+          projetos={projetos}
+          defaultProjetoId={selectedProject.id}
+          defaultComponenteId={sobraComponente.id}
+          defaultMaterial={sobraComponente.material}
+          defaultFormato={(sobraComponente as any).formato || 'BLOCO'}
+          onSuccess={(msg) => {
+            setSobraComponente(null);
+            showFeedback('success', msg);
+            onRefresh();
+            if (selectedProject?.id) {
+              carregarDadosEstoqueProjeto(selectedProject.id);
+            }
+          }}
+        />
       )}
     </div>
   );

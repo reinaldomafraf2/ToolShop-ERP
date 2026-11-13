@@ -11,8 +11,9 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db, cleanFirestoreData } from '../firebase/config';
 import { handleFirestoreError, OperationType } from '../firebase/errors';
+import { syncStatusService } from '../services/syncStatusService';
 import {
   Cliente,
   CentroCusto,
@@ -92,6 +93,7 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
         q = query(colRef, where('empresa_id', '==', empresaId));
       }
       const snapshot = await getDocs(q);
+      syncStatusService.recordSuccess(`leitura ${this.collectionName}`);
       if (!snapshot.empty) {
         const items: T[] = [];
         snapshot.forEach((d) => {
@@ -106,7 +108,8 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
       }
       const local = await this.localRepo.getAll(empresaId);
       return local.filter((item) => !isExampleItem(item));
-    } catch {
+    } catch (err) {
+      syncStatusService.recordError(err, `leitura ${this.collectionName}`);
       const local = await this.localRepo.getAll(empresaId);
       return local.filter((item) => !isExampleItem(item));
     }
@@ -117,12 +120,14 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
     try {
       const docRef = doc(db, this.collectionName, id);
       const snapshot = await getDoc(docRef);
+      syncStatusService.recordSuccess(`leitura ${this.collectionName}`);
       if (snapshot.exists()) {
         const item = snapshot.data() as T;
         return isExampleItem(item) ? null : item;
       }
       return this.localRepo.getById(id);
-    } catch {
+    } catch (err) {
+      syncStatusService.recordError(err, `leitura ${this.collectionName}`);
       return this.localRepo.getById(id);
     }
   }
@@ -142,9 +147,11 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
 
     try {
       const docRef = doc(db, this.collectionName, finalId);
-      await setDoc(docRef, finalItem);
+      await setDoc(docRef, cleanFirestoreData(finalItem));
+      syncStatusService.recordSuccess(`gravação ${this.collectionName}`);
       return finalItem;
     } catch (err) {
+      syncStatusService.recordError(err, `gravação ${this.collectionName}`);
       console.warn(`[Firestore ${this.collectionName}] create pendente de rede:`, err);
       return finalItem;
     }
@@ -154,8 +161,10 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
     const updated = await this.localRepo.update(id, updates);
     try {
       const docRef = doc(db, this.collectionName, id);
-      await updateDoc(docRef, updates as { [key: string]: unknown });
+      await updateDoc(docRef, cleanFirestoreData(updates as Record<string, any>));
+      syncStatusService.recordSuccess(`gravação ${this.collectionName}`);
     } catch (err) {
+      syncStatusService.recordError(err, `gravação ${this.collectionName}`);
       console.warn(`[Firestore ${this.collectionName}] update pendente de rede:`, err);
     }
     return updated;
@@ -166,8 +175,10 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
     try {
       const docRef = doc(db, this.collectionName, id);
       await deleteDoc(docRef);
+      syncStatusService.recordSuccess(`exclusão ${this.collectionName}`);
       return true;
     } catch (err) {
+      syncStatusService.recordError(err, `exclusão ${this.collectionName}`);
       console.warn(`[Firestore ${this.collectionName}] delete pendente de rede:`, err);
       return true;
     }
@@ -178,9 +189,11 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
     try {
       for (const item of items) {
         const docRef = doc(db, this.collectionName, item.id);
-        await setDoc(docRef, item);
+        await setDoc(docRef, cleanFirestoreData(item));
       }
+      syncStatusService.recordSuccess(`gravação em lote ${this.collectionName}`);
     } catch (err) {
+      syncStatusService.recordError(err, `gravação em lote ${this.collectionName}`);
       console.warn(`[Firestore ${this.collectionName}] saveAll pendente de rede:`, err);
     }
   }
@@ -548,12 +561,15 @@ export class FirestoreConfiguracoesRepository
     try {
       const docRef = doc(db, this.collectionName, 'config_padrao');
       const snap = await getDoc(docRef);
+      syncStatusService.recordSuccess(`leitura ${this.collectionName}`);
       if (snap.exists()) {
         const cfg = snap.data() as ConfiguracoesSistema;
         await this.localRepo.update(cfg.id, cfg).catch(() => {});
         return cfg;
       }
-    } catch {}
+    } catch (err) {
+      syncStatusService.recordError(err, `leitura ${this.collectionName}`);
+    }
     return (this.localRepo as any).getConfig(empresaId);
   }
 
@@ -565,7 +581,9 @@ export class FirestoreConfiguracoesRepository
     const updated = { ...current, ...updates };
     try {
       await setDoc(doc(db, this.collectionName, 'config_padrao'), updated, { merge: true });
+      syncStatusService.recordSuccess(`gravação ${this.collectionName}`);
     } catch (err) {
+      syncStatusService.recordError(err, `gravação ${this.collectionName}`);
       console.warn('Falha ao atualizar config no Firestore:', err);
     }
     return (this.localRepo as any).updateConfig(updates, empresaId);

@@ -27,12 +27,15 @@ export const SEED_MODELOS_COMPONENTES: ModeloComponente[] = [];
 export const SEED_HISTORICO_IMPORTACOES: HistoricoImportacao[] = [];
 export const SEED_OPERADOR_CENTROS_CUSTO: OperadorCentroCusto[] = [];
 
-// Configurações padrão de sistema preservadas
 export const SEED_CONFIGURACOES: ConfiguracoesSistema = {
   id: 'config_padrao',
   empresa_id: DEFAULT_EMPRESA_ID,
   restringir_postos: true, // Ligada por padrão
   liberar_apenas_proxima_operacao: false, // Desligada por padrão
+  empresa_nome: 'TOOLSHOP FERRAMENTARIA & USINAGEM LTDA',
+  empresa_cnpj: '12.345.678/0001-90',
+  empresa_endereco: 'Rua das Indústrias, 1000 - Distrito Industrial - Joinville/SC',
+  empresa_telefone: '(47) 3456-7890',
   atualizado_por: 'Sistema ToolShop',
   atualizado_em: '2026-01-01T00:00:00.000Z',
 };

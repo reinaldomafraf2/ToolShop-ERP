@@ -720,6 +720,7 @@ export interface ModeloImportAgrupado {
   operacoes: Array<{
     sequencia: number;
     descricao: string;
+    instrucoes?: string;
     tipo_maquina: TipoMaquina;
     horas_estimadas: number;
     prazo_dias?: number;
@@ -749,6 +750,7 @@ export function downloadPlanilhaModeloBiblioteca(): void {
       'Operação',
       'Centro de custo',
       'Horas',
+      'Instruções',
     ],
     [
       'MOD-PLACA-SUP',
@@ -759,6 +761,7 @@ export function downloadPlanilhaModeloBiblioteca(): void {
       'Desbaste de faces e canais',
       'Fresa',
       5.0,
+      'LADO SUPERIOR:\n#CALÇO#\n_facear;\n_usinar contorno pronto;\n_furação de rosca e passagens pronto;',
     ],
     [
       'MOD-PLACA-SUP',
@@ -886,6 +889,7 @@ export async function parseArquivoBiblioteca(
   let colHoras = -1;
   let colPrazo = -1;
   let colFornecedor = -1;
+  let colInstrucoes = -1;
 
   headerRow.forEach((col, idx) => {
     const norm = normalizeString(col);
@@ -919,6 +923,15 @@ export async function parseArquivoBiblioteca(
       colPrazo = idx;
     } else if (norm === 'fornecedor' || norm === 'terceiro') {
       colFornecedor = idx;
+    } else if (
+      norm === 'instrucoes' ||
+      norm === 'instrucao' ||
+      norm === 'instrucoes de execucao' ||
+      norm === 'plano de fabricacao' ||
+      norm === 'plano fabricacao' ||
+      norm === 'observacoes da operacao'
+    ) {
+      colInstrucoes = idx;
     }
   });
 
@@ -963,6 +976,7 @@ export async function parseArquivoBiblioteca(
     const rawHoras = colHoras >= 0 ? r[colHoras] : 0;
     const rawPrazo = colPrazo >= 0 ? r[colPrazo] : null;
     const rawFornecedor = colFornecedor >= 0 ? String(r[colFornecedor] || '').trim() : '';
+    let rawInstrucoes = colInstrucoes >= 0 ? String(r[colInstrucoes] || '') : '';
 
     if (!rawCodigo) {
       errosGerais.push(`Linha ${linhaNumero}: O campo "Código" está em branco.`);
@@ -1060,10 +1074,19 @@ export async function parseArquivoBiblioteca(
       }
     }
 
+    if (rawInstrucoes && rawInstrucoes.length > 5000) {
+      rawInstrucoes = rawInstrucoes.substring(0, 5000);
+      grupo.linhasComErro.push({
+        linhaNumero,
+        motivo: `Instruções da operação "${rawOperacao || parsedSeq}" excederam 5.000 caracteres e foram truncadas para o limite máximo.`,
+      });
+    }
+
     const finalHoras = parsedHoras && parsedHoras > 0 ? parsedHoras : 0;
     grupo.operacoes.push({
       sequencia: parsedSeq,
       descricao: rawOperacao,
+      instrucoes: rawInstrucoes.trim() ? rawInstrucoes : undefined,
       tipo_maquina: tipoMaquinaEncontrado,
       horas_estimadas: finalHoras,
       prazo_dias: parsedPrazo && !isNaN(parsedPrazo) && parsedPrazo > 0 ? parsedPrazo : (isOutsourcedCategory ? 5 : undefined),

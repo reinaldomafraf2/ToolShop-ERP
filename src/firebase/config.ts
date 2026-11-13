@@ -25,3 +25,28 @@ export async function testFirestoreConnection(): Promise<boolean> {
 testFirestoreConnection().catch((err) => {
   console.warn('Initial Firestore connection check notice:', err);
 });
+
+/**
+ * Remove recursivamente todas as propriedades com valor `undefined` de um objeto ou array.
+ * O SDK do Firestore rejeita qualquer documento contendo campos com valor `undefined`.
+ */
+export function cleanFirestoreData<T>(obj: T): T {
+  if (obj === null || obj === undefined || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((item) => cleanFirestoreData(item)) as unknown as T;
+  }
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, any>)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+      cleaned[key] = cleanFirestoreData(value);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned as T;
+}

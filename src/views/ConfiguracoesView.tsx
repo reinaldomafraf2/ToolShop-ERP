@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ConfiguracoesSistema, Operador, CentroCusto } from '../types';
 import { toolShopService } from '../services/toolShopService';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
+import { ConfirmDeleteModal } from '../components/common/ConfirmDeleteModal';
 import { useAuth } from '../auth/AuthContext';
 import {
   Sliders,
@@ -16,6 +17,13 @@ import {
   Save,
   Loader2,
   Trash2,
+  Building2,
+  Image as ImageIcon,
+  Phone,
+  MapPin,
+  Upload,
+  X,
+  Package,
 } from 'lucide-react';
 import { formatDateTimeBR } from '../utils/formatters';
 
@@ -34,6 +42,7 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
 }) => {
   const { user, can } = useAuth();
   const canEdit = can('editar', 'configuracoes');
+  const isAdmin = user?.perfil === 'admin';
 
   const [config, setConfig] = useState<ConfiguracoesSistema | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -42,8 +51,20 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
     null
   );
 
+  // Formulário de Dados Cadastrais da Empresa (Exclusivo Admin)
+  const [empresaForm, setEmpresaForm] = useState({
+    nome: '',
+    cnpj: '',
+    endereco: '',
+    telefone: '',
+    logo: '',
+  });
+
   // Contagem de operadores sem postos vinculados
   const [operadoresSemPostoCount, setOperadoresSemPostoCount] = useState<number>(0);
+
+  // Prazo de alerta para reservas paradas (dias)
+  const [diasAlertaReservaInput, setDiasAlertaReservaInput] = useState<number>(30);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -53,6 +74,14 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
         toolShopService.getOperadorCentrosCusto(),
       ]);
       setConfig(cfg);
+      setEmpresaForm({
+        nome: cfg.empresa_nome || '',
+        cnpj: cfg.empresa_cnpj || '',
+        endereco: cfg.empresa_endereco || '',
+        telefone: cfg.empresa_telefone || '',
+        logo: cfg.empresa_logo || '',
+      });
+      setDiasAlertaReservaInput(cfg.dias_alerta_reserva_parada ?? 30);
 
       const vinculadosIds = new Set(vinculos.map((v) => v.operador_id));
       const semPosto = operadores.filter((op) => !vinculadosIds.has(op.id)).length;
@@ -69,20 +98,19 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
   }, [operadores]);
 
   const [isPurging, setIsPurging] = useState(false);
+  const [isPurgeModalOpen, setIsPurgeModalOpen] = useState(false);
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
     setFeedback({ type, message });
     setTimeout(() => setFeedback(null), 4500);
   };
 
-  const handlePurgeExamples = async () => {
-    if (!window.confirm('Deseja realmente apagar todos os dados de exemplo? Apenas configurações e usuários do sistema serão mantidos.')) {
-      return;
-    }
+  const handleConfirmPurgeExamples = async () => {
     setIsPurging(true);
     try {
       await toolShopService.apagarDadosDeExemplo();
       showFeedback('success', 'Dados de exemplo apagados com sucesso! O sistema está pronto.');
+      setIsPurgeModalOpen(false);
       await loadData();
       onRefresh?.();
     } catch (err: any) {
@@ -135,6 +163,137 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
       onRefresh?.();
     } catch (err: any) {
       showFeedback('error', err.message || 'Erro ao salvar configuração.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleToggleAvisarMaterialPendente = async () => {
+    if (!config || !canEdit || isSaving) return;
+    const novoValor = !config.avisar_operador_material_pendente;
+    setIsSaving(true);
+    try {
+      const updated = await toolShopService.updateConfiguracoes(
+        { avisar_operador_material_pendente: novoValor },
+        user?.nome || 'Administrador'
+      );
+      setConfig(updated);
+      showFeedback(
+        'success',
+        novoValor
+          ? 'Aviso de material pendente ativado. O operador verá um alerta visual na tela de Apontamento quando a matéria-prima ainda não tiver sido recebida.'
+          : 'Aviso de material pendente desativado.'
+      );
+      onRefresh?.();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao salvar configuração.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleTogglePermitirSaldoNegativo = async () => {
+    if (!config || !canEdit || isSaving) return;
+    const novoValor = !config.permitir_saldo_negativo;
+    setIsSaving(true);
+    try {
+      const updated = await toolShopService.updateConfiguracoes(
+        { permitir_saldo_negativo: novoValor },
+        user?.nome || 'Administrador'
+      );
+      setConfig(updated);
+      showFeedback(
+        'success',
+        novoValor
+          ? 'Permissão de saldo negativo ativada. Saídas e reservas agora poderão exceder o saldo disponível se necessário.'
+          : 'Permissão de saldo negativo desativada. Saídas e reservas acima do disponível serão bloqueadas estritamente.'
+      );
+      onRefresh?.();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao salvar configuração.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveDiasAlertaReserva = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!config || !canEdit || isSaving) return;
+    const dias = Math.max(1, Math.min(365, Number(diasAlertaReservaInput) || 30));
+    setIsSaving(true);
+    try {
+      const updated = await toolShopService.updateConfiguracoes(
+        { dias_alerta_reserva_parada: dias },
+        user?.nome || 'Administrador'
+      );
+      setConfig(updated);
+      setDiasAlertaReservaInput(updated.dias_alerta_reserva_parada ?? 30);
+      showFeedback('success', `Prazo para alerta de reservas paradas atualizado para ${dias} dias.`);
+      onRefresh?.();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao salvar configuração.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Limite de 500 KB (500 * 1024 bytes)
+    const maxSizeBytes = 500 * 1024;
+    if (file.size > maxSizeBytes) {
+      showFeedback('error', 'O arquivo de imagem excede o limite máximo permitido de 500 KB.');
+      if (e.target) e.target.value = '';
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      showFeedback('error', 'Formato inválido. Por favor envie uma imagem (PNG, JPG, SVG, WebP).');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      setEmpresaForm((prev) => ({ ...prev, logo: dataUrl }));
+      showFeedback(
+        'success',
+        'Logotipo carregado na prévia! Clique em "Salvar Dados da Empresa" para confirmar.'
+      );
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLogo = () => {
+    setEmpresaForm((prev) => ({ ...prev, logo: '' }));
+  };
+
+  const handleSaveEmpresa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canEdit || isSaving || !isAdmin) return;
+
+    setIsSaving(true);
+    try {
+      const updated = await toolShopService.updateConfiguracoes(
+        {
+          empresa_nome: empresaForm.nome.trim() || undefined,
+          empresa_cnpj: empresaForm.cnpj.trim() || undefined,
+          empresa_endereco: empresaForm.endereco.trim() || undefined,
+          empresa_telefone: empresaForm.telefone.trim() || undefined,
+          empresa_logo: empresaForm.logo || undefined,
+        },
+        user?.nome || 'Administrador'
+      );
+      setConfig(updated);
+      showFeedback(
+        'success',
+        'Dados da empresa e logotipo salvos com sucesso para cabeçalho das Folhas de Processos!'
+      );
+      onRefresh?.();
+    } catch (err: any) {
+      showFeedback('error', err.message || 'Erro ao salvar dados da empresa.');
     } finally {
       setIsSaving(false);
     }
@@ -209,6 +368,159 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           )}
+        </div>
+      )}
+
+      {/* Configurações da Empresa (Exclusivo Administrador: Folha de Processos) */}
+      {isAdmin && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-2xs">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 pb-4 mb-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-900 text-amber-400">
+                <Building2 className="h-6 w-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-900">
+                    Dados Cadastrais da Empresa
+                  </h3>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                    Exclusivo Admin
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Nome, CNPJ, endereço, telefone e logotipo exibidos no cabeçalho da Folha de Processos (Plano de Fabricação)
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSaveEmpresa}
+              disabled={isSaving}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-slate-800 disabled:opacity-50 transition-colors self-start sm:self-auto"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+                  <span>Salvando...</span>
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4 text-amber-400" />
+                  <span>Salvar Dados da Empresa</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <form onSubmit={handleSaveEmpresa} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Nome / Razão Social da Empresa
+                </label>
+                <input
+                  type="text"
+                  value={empresaForm.nome}
+                  onChange={(e) => setEmpresaForm({ ...empresaForm, nome: e.target.value })}
+                  placeholder="Ex: TOOLSHOP FERRAMENTARIA E USINAGEM LTDA"
+                  className="w-full rounded-xl border border-slate-300 py-2 px-3 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  CNPJ
+                </label>
+                <input
+                  type="text"
+                  value={empresaForm.cnpj}
+                  onChange={(e) => setEmpresaForm({ ...empresaForm, cnpj: e.target.value })}
+                  placeholder="Ex: 00.000.000/0001-00"
+                  className="w-full rounded-xl border border-slate-300 py-2 px-3 text-xs text-slate-900 focus:border-slate-900 focus:outline-none font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                  <MapPin className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Endereço Completo</span>
+                </label>
+                <input
+                  type="text"
+                  value={empresaForm.endereco}
+                  onChange={(e) => setEmpresaForm({ ...empresaForm, endereco: e.target.value })}
+                  placeholder="Ex: Rua das Indústrias, 1000 - Distrito Industrial - Joinville/SC"
+                  className="w-full rounded-xl border border-slate-300 py-2 px-3 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                  <Phone className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Telefone / Contato</span>
+                </label>
+                <input
+                  type="text"
+                  value={empresaForm.telefone}
+                  onChange={(e) => setEmpresaForm({ ...empresaForm, telefone: e.target.value })}
+                  placeholder="Ex: (47) 3456-7890"
+                  className="w-full rounded-xl border border-slate-300 py-2 px-3 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Upload de Logotipo da Empresa (até 500 KB) */}
+            <div className="pt-2 border-t border-slate-100">
+              <label className="block text-xs font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
+                <ImageIcon className="h-4 w-4 text-slate-500" />
+                <span>Logotipo da Empresa (imagem opcional, até 500 KB):</span>
+              </label>
+
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                {empresaForm.logo ? (
+                  <div className="relative flex items-center justify-center p-2 rounded-xl border-2 border-slate-200 bg-slate-50 max-w-[200px] max-h-[80px]">
+                    <img
+                      src={empresaForm.logo}
+                      alt="Logo da Empresa"
+                      className="max-h-[60px] max-w-[180px] object-contain"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleRemoveLogo}
+                      className="absolute -top-2 -right-2 rounded-full bg-rose-600 text-white p-1 shadow-sm hover:bg-rose-700"
+                      title="Remover logotipo"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex h-16 w-36 items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 text-slate-400 text-[11px] font-medium text-center p-2">
+                    Nenhum logo carregado
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer shadow-2xs">
+                    <Upload className="h-4 w-4 text-slate-500" />
+                    <span>{empresaForm.logo ? 'Substituir Imagem...' : 'Selecionar Logotipo...'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLogoUpload}
+                      className="hidden"
+                    />
+                  </label>
+                  <p className="text-[11px] text-slate-400">
+                    Formatos aceitos: PNG, JPG, WebP ou SVG. Máximo: 500 KB.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </form>
         </div>
       )}
 
@@ -389,7 +701,189 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
           </div>
         </div>
 
-        {/* Card 3: Limpeza de Dados de Demonstração */}
+        {/* Card 3: Aviso de Material Pendente no Apontamento */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
+                  <AlertTriangle className="h-4 w-4" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Avisar o operador quando o material da peça ainda não foi recebido
+                </h3>
+              </div>
+              <p className="text-xs text-slate-500 pl-10">
+                Alerta visual na tela de apontamento caso a matéria-prima ainda esteja pendente, solicitada ou comprada.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 self-end sm:self-auto pl-10 sm:pl-0">
+              <div className="text-right">
+                <span
+                  className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${
+                    config?.avisar_operador_material_pendente
+                      ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                      : 'bg-slate-100 text-slate-600 border border-slate-200'
+                  }`}
+                >
+                  {config?.avisar_operador_material_pendente ? 'Ativo (Avisar)' : 'Desativado'}
+                </span>
+              </div>
+
+              {/* Toggle Switch */}
+              <button
+                type="button"
+                disabled={!canEdit || isSaving}
+                onClick={handleToggleAvisarMaterialPendente}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+                  config?.avisar_operador_material_pendente ? 'bg-amber-600' : 'bg-slate-300'
+                }`}
+                role="switch"
+                aria-checked={config?.avisar_operador_material_pendente}
+                aria-label="Alternar aviso de material pendente ao operador"
+              >
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    config?.avisar_operador_material_pendente ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <p className="text-xs leading-relaxed text-slate-600">
+            Quando ligado, se a matéria-prima da peça ainda não constar com status <strong>Recebido</strong> no
+            módulo de compras, a tela de Apontamento exibe a etiqueta destacada <strong>"Material não recebido"</strong> no card da operação. O início do apontamento continua permitido para flexibilidade operacional da oficina.
+          </p>
+
+          <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span>Padrão do Sistema: <strong>Desligado</strong></span>
+            {!canEdit && (
+              <span className="text-[11px] text-amber-700 italic">
+                Apenas Gerente e Administrador podem alterar
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Card: Estoque - Parâmetros e Alertas */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs space-y-6">
+          {/* Seção 1: Saldo Negativo */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
+                  <Package className="h-4 w-4" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Permitir saldo negativo no estoque de materiais
+                </h3>
+              </div>
+              <p className="text-xs text-slate-500 pl-10">
+                Flexibiliza saídas e reservas quando o saldo disponível no sistema for insuficiente.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 self-end sm:self-auto pl-10 sm:pl-0">
+              <div className="text-right">
+                <span
+                  className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${
+                    config?.permitir_saldo_negativo
+                      ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                      : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                  }`}
+                >
+                  {config?.permitir_saldo_negativo ? 'Permitido (Flexível)' : 'Bloqueado (Padrão)'}
+                </span>
+              </div>
+
+              {/* Toggle Switch */}
+              <button
+                type="button"
+                disabled={!canEdit || isSaving}
+                onClick={handleTogglePermitirSaldoNegativo}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+                  config?.permitir_saldo_negativo ? 'bg-indigo-600' : 'bg-slate-300'
+                }`}
+                role="switch"
+                aria-checked={config?.permitir_saldo_negativo}
+                aria-label="Alternar permissão de saldo negativo no estoque"
+              >
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    config?.permitir_saldo_negativo ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <p className="text-xs leading-relaxed text-slate-600 pl-10">
+            Por padrão, saídas e reservas de materiais e consumíveis são bloqueadas caso a quantidade solicitada exceda o <strong>saldo disponível</strong> (saldo físico menos reservas ativas). Ative esta opção caso a oficina necessite lançar baixas físicas de material antes da nota fiscal ou cadastro de entrada no ERP.
+          </p>
+
+          {/* Seção 2: Dias para alertar reserva parada */}
+          <div className="pt-5 border-t border-slate-100">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
+                    <Clock className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Dias para alertar reserva parada
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Gera aviso no Painel para reservas ativas que não tiveram retirada para produção após este período.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pl-10 sm:pl-0">
+                <div className="relative w-28">
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    disabled={!canEdit || isSaving}
+                    value={diasAlertaReservaInput}
+                    onChange={(e) => setDiasAlertaReservaInput(Number(e.target.value))}
+                    className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm font-bold text-slate-800 text-center shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-slate-100"
+                  />
+                  <span className="absolute right-2.5 top-2 text-xs text-slate-400 pointer-events-none">dias</span>
+                </div>
+
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={handleSaveDiasAlertaReserva}
+                    disabled={isSaving || diasAlertaReservaInput === (config?.dias_alerta_reserva_parada ?? 30)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-slate-800 transition-colors disabled:opacity-40"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    <span>Salvar</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span>Padrão do Sistema: Saldo negativo <strong>Desligado</strong> | Alerta de reservas: <strong>30 dias</strong></span>
+            {!canEdit && (
+              <span className="text-[11px] text-amber-700 italic">
+                Apenas Gerente e Administrador podem alterar
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Card 4: Limpeza de Dados de Demonstração */}
         <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
@@ -410,7 +904,7 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
             {canEdit && (
               <button
                 type="button"
-                onClick={handlePurgeExamples}
+                onClick={() => setIsPurgeModalOpen(true)}
                 disabled={isPurging}
                 className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-bold text-rose-700 shadow-2xs hover:bg-rose-100 hover:border-rose-300 transition-colors disabled:opacity-50"
               >
@@ -432,6 +926,16 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
           </div>
         </div>
       </div>
+
+      <ConfirmDeleteModal
+        isOpen={isPurgeModalOpen}
+        onClose={() => setIsPurgeModalOpen(false)}
+        onConfirm={handleConfirmPurgeExamples}
+        title="Apagar Dados de Demonstração"
+        itemName="todos os projetos, peças, apontamentos e dados de exemplo"
+        entityTypeLabel="Dados de Demonstração"
+        isDeleting={isPurging}
+      />
     </div>
   );
 };

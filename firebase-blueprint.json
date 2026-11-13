@@ -66,6 +66,8 @@
         "empresa_id": { "type": "string" },
         "cliente_id": { "type": "string" },
         "codigo": { "type": "string", "maxLength": 50 },
+        "orcamento_codigo": { "type": "string", "maxLength": 50 },
+        "planejador": { "type": "string", "maxLength": 100 },
         "descricao": { "type": "string", "maxLength": 250 },
         "tipo": { "type": "string", "maxLength": 50 },
         "status": { "type": "string", "enum": ["Aguardando", "Em andamento", "Em tryout", "Concluído", "Cancelado"] },
@@ -92,6 +94,8 @@
         "material": { "type": "string", "maxLength": 100 },
         "dimensoes": { "type": "string", "maxLength": 100 },
         "formato": { "type": "string", "maxLength": 50 },
+        "peso_kg": { "type": "number" },
+        "peso_calculado": { "type": "boolean" },
         "tratamento": { "type": "string", "maxLength": 150 },
         "observacoes": { "type": "string", "maxLength": 1000 },
         "status": { "type": "string", "enum": ["Pendente", "Em produção", "Concluído", "Comprado", "Em estoque"] },
@@ -157,16 +161,19 @@
         "matricula": { "type": "string", "maxLength": 50 },
         "perfil": { "type": "string", "enum": ["admin", "gerente", "lider", "operador"] },
         "ativo": { "type": "boolean" },
+        "operador_id": { "type": "string" },
+        "ultimo_login": { "type": "string" },
+        "ultimo_acesso": { "type": "string" },
         "senha_hash": { "type": "string" },
-        "salt": { "type": "string" },
-        "iterations": { "type": "number" },
+        "senha_salt": { "type": "string" },
+        "senha_iter": { "type": "number" },
         "pin_hash": { "type": "string" },
         "pin_salt": { "type": "string" },
-        "pin_iterations": { "type": "number" },
+        "pin_iter": { "type": "number" },
         "criado_em": { "type": "string" },
         "atualizado_em": { "type": "string" }
       },
-      "required": ["id", "empresa_id", "nome", "email", "perfil", "ativo"]
+      "required": ["id", "empresa_id", "nome", "perfil", "ativo"]
     },
     "ModeloComponente": {
       "title": "ModeloComponente",
@@ -204,6 +211,151 @@
         "status": { "type": "string", "maxLength": 50 }
       },
       "required": ["id", "empresa_id", "usuario_id", "usuario_nome", "data_hora", "tipo", "arquivo_nome"]
+    },
+    "Fornecedor": {
+      "title": "Fornecedor",
+      "description": "Cadastro de fornecedor de matérias-primas e componentes comerciais",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "nome": { "type": "string", "maxLength": 200 },
+        "contato": { "type": "string", "maxLength": 100 },
+        "telefone": { "type": "string", "maxLength": 50 },
+        "email": { "type": "string", "maxLength": 100 },
+        "prazo_padrao_dias": { "type": "number" },
+        "observacoes": { "type": "string", "maxLength": 1000 },
+        "ativo": { "type": "boolean" },
+        "criado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "nome", "ativo"]
+    },
+    "ItemCompra": {
+      "title": "ItemCompra",
+      "description": "Necessidade e item de compra de matéria-prima ou componente comercial",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "projeto_id": { "type": "string" },
+        "componente_id": { "type": "string" },
+        "item_estoque_id": { "type": "string" },
+        "movimento_entrada_id": { "type": "string" },
+        "tipo": { "type": "string", "enum": ["materia_prima", "item_comercial", "reposicao"] },
+        "descricao": { "type": "string", "maxLength": 250 },
+        "especificacao": { "type": "string", "maxLength": 500 },
+        "quantidade": { "type": "number" },
+        "unidade": { "type": "string", "enum": ["un", "kg", "m", "pç"] },
+        "peso_kg": { "type": "number" },
+        "fornecedor_id": { "type": "string" },
+        "numero_lista": { "type": "string", "maxLength": 50 },
+        "data_lista": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["a_solicitar", "solicitado", "comprado", "recebido", "cancelado", "atendido_estoque"]
+        },
+        "data_solicitacao": { "type": "string" },
+        "numero_pedido": { "type": "string", "maxLength": 100 },
+        "previsao_entrega": { "type": "string" },
+        "data_recebimento": { "type": "string" },
+        "nota_fiscal": { "type": "string", "maxLength": 100 },
+        "observacoes": { "type": "string", "maxLength": 1000 },
+        "valor_estimado": { "type": "number" },
+        "valor_real": { "type": "number" },
+        "criado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "tipo", "descricao", "quantidade", "unidade", "status"]
+    },
+    "ItemEstoque": {
+      "title": "ItemEstoque",
+      "description": "Item de estoque, matéria-prima ou insumo controlado pelo almoxarifado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "codigo": { "type": "string", "maxLength": 100 },
+        "descricao": { "type": "string", "maxLength": 300 },
+        "categoria": { "type": "string", "enum": ["materia_prima", "item_comercial", "consumivel", "outro"] },
+        "unidade": { "type": "string", "enum": ["un", "kg", "m", "pç"] },
+        "especificacao": { "type": "string", "maxLength": 500 },
+        "tipo_controle": { "type": "string", "enum": ["quantidade", "unidade_fisica"] },
+        "estoque_minimo": { "type": "number" },
+        "localizacao_padrao": { "type": "string", "maxLength": 100 },
+        "saldo": { "type": "number" },
+        "custo_medio": { "type": "number" },
+        "ativo": { "type": "boolean" },
+        "criado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "codigo", "descricao", "categoria", "unidade", "tipo_controle", "saldo", "ativo"]
+    },
+    "UnidadeEstoque": {
+      "title": "UnidadeEstoque",
+      "description": "Peça física rastreada (bloco, barra, retalho/sobra com dimensões)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "item_id": { "type": "string" },
+        "etiqueta": { "type": "string", "maxLength": 100 },
+        "material": { "type": "string", "maxLength": 100 },
+        "formato": { "type": "string", "maxLength": 50 },
+        "comprimento_mm": { "type": "number" },
+        "largura_mm": { "type": "number" },
+        "espessura_mm": { "type": "number" },
+        "diametro_mm": { "type": "number" },
+        "peso_kg": { "type": "number" },
+        "custo_unitario": { "type": "number" },
+        "lote_ou_certificado": { "type": "string", "maxLength": 100 },
+        "localizacao": { "type": "string", "maxLength": 100 },
+        "origem": { "type": "string", "enum": ["compra", "sobra", "ajuste"] },
+        "origem_projeto_id": { "type": "string" },
+        "origem_componente_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["disponivel", "reservada", "consumida", "descartada"] },
+        "observacoes": { "type": "string", "maxLength": 1000 },
+        "criado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "item_id", "etiqueta", "origem", "status"]
+    },
+    "MovimentoEstoque": {
+      "title": "MovimentoEstoque",
+      "description": "Registro imutável de movimentação (entrada, saída, ajuste) de estoque",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "item_id": { "type": "string" },
+        "unidade_id": { "type": "string" },
+        "tipo": { "type": "string", "enum": ["entrada", "saida", "ajuste"] },
+        "quantidade": { "type": "number" },
+        "data_hora": { "type": "string" },
+        "usuario_id": { "type": "string" },
+        "usuario_nome": { "type": "string", "maxLength": 150 },
+        "projeto_id": { "type": "string" },
+        "componente_id": { "type": "string" },
+        "item_compra_id": { "type": "string" },
+        "motivo": { "type": "string", "enum": ["compra", "producao", "inventario", "perda", "devolucao", "outro"] },
+        "custo_unitario": { "type": "number" },
+        "custo_total": { "type": "number" },
+        "observacoes": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["id", "empresa_id", "item_id", "tipo", "quantidade", "data_hora", "motivo"]
+    },
+    "ReservaEstoque": {
+      "title": "ReservaEstoque",
+      "description": "Reserva de material ou peça física para componente de projeto",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "empresa_id": { "type": "string" },
+        "item_id": { "type": "string" },
+        "unidade_id": { "type": "string" },
+        "quantidade": { "type": "number" },
+        "projeto_id": { "type": "string" },
+        "componente_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["ativa", "consumida", "cancelada"] },
+        "criado_em": { "type": "string" }
+      },
+      "required": ["id", "empresa_id", "item_id", "quantidade", "status"]
     }
   },
   "firestore": {
@@ -246,6 +398,30 @@
     "/historico_importacoes/{historicoId}": {
       "schema": { "$ref": "#/entities/HistoricoImportacao" },
       "description": "Auditoria de importações de planilhas"
+    },
+    "/fornecedores/{fornecedorId}": {
+      "schema": { "$ref": "#/entities/Fornecedor" },
+      "description": "Coleção de fornecedores de materiais e componentes comerciais"
+    },
+    "/itens_compra/{itemCompraId}": {
+      "schema": { "$ref": "#/entities/ItemCompra" },
+      "description": "Coleção de necessidades e itens de compra"
+    },
+    "/itens_estoque/{itemId}": {
+      "schema": { "$ref": "#/entities/ItemEstoque" },
+      "description": "Coleção de itens controlados no estoque"
+    },
+    "/unidades_estoque/{unidadeId}": {
+      "schema": { "$ref": "#/entities/UnidadeEstoque" },
+      "description": "Coleção de unidades físicas e sobras rastreadas"
+    },
+    "/movimentos_estoque/{movimentoId}": {
+      "schema": { "$ref": "#/entities/MovimentoEstoque" },
+      "description": "Histórico imutável de movimentações de estoque"
+    },
+    "/reservas_estoque/{reservaId}": {
+      "schema": { "$ref": "#/entities/ReservaEstoque" },
+      "description": "Coleção de reservas ativas e históricas de estoque"
     }
   }
 }

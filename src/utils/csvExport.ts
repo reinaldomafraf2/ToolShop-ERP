@@ -6,7 +6,6 @@ import { formatDateBR, formatHours } from './formatters';
  */
 export function exportProjetosToCSV(projetos: ProjetoComDetalhes[]): void {
   if (!projetos || projetos.length === 0) {
-    alert('Nenhum projeto disponível para exportação.');
     return;
   }
 

@@ -21,7 +21,12 @@ import {
   Truck,
   Send,
   PackageCheck,
+  ShoppingCart,
+  Scissors,
+  Package,
 } from 'lucide-react';
+import { comprasService } from '../services/comprasService';
+import { estoqueService } from '../services/estoqueService';
 import {
   BarChart,
   Bar,
@@ -77,6 +82,41 @@ export const PainelView: React.FC<PainelViewProps> = ({
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  const [resumoCompras, setResumoCompras] = useState<{
+    total: number;
+    a_solicitar: number;
+    solicitados: number;
+    comprados: number;
+    recebidos: number;
+    atrasados: any[];
+    pecasAguardandoMaterial: any[];
+  } | null>(null);
+
+  useEffect(() => {
+    comprasService
+      .getResumoComprasPainel()
+      .then((data) => setResumoCompras(data))
+      .catch((err) =>
+        console.error('Erro ao carregar resumo de compras do painel:', err)
+      );
+  }, [projetos]);
+
+  const [resumoEstoque, setResumoEstoque] = useState<{
+    itensAbaixoMinimo: any[];
+    sobrasDisponiveis: any[];
+    reservasParadas: any[];
+    diasAlerta: number;
+  } | null>(null);
+
+  useEffect(() => {
+    estoqueService
+      .getResumoEstoquePainel()
+      .then((data) => setResumoEstoque(data))
+      .catch((err) =>
+        console.error('Erro ao carregar resumo de estoque do painel:', err)
+      );
+  }, [projetos]);
 
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
   const currentMonthPrefix = useMemo(() => {
@@ -411,6 +451,144 @@ export const PainelView: React.FC<PainelViewProps> = ({
           </div>
           <div className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-600">
             Tempo real apurado
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 1.1 CARDS DE ESTOQUE E ALMOXARIFADO                                       */}
+      {/* ========================================================================= */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {/* Card 1: Estoque abaixo do mínimo */}
+        <div
+          className={`flex flex-col justify-between rounded-2xl border p-5 shadow-2xs transition-all ${
+            (resumoEstoque?.itensAbaixoMinimo.length || 0) > 0
+              ? 'border-rose-300 bg-rose-50/50'
+              : 'border-slate-200 bg-white'
+          }`}
+        >
+          <div>
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+              <span className="font-semibold text-slate-700">Estoque abaixo do mínimo</span>
+              <AlertTriangle
+                className={`h-4 w-4 ${
+                  (resumoEstoque?.itensAbaixoMinimo.length || 0) > 0
+                    ? 'text-rose-600'
+                    : 'text-slate-400'
+                }`}
+              />
+            </div>
+            <div className="mt-3 flex items-baseline gap-2">
+              <span
+                className={`font-mono text-3xl font-bold tracking-tight ${
+                  (resumoEstoque?.itensAbaixoMinimo.length || 0) > 0
+                    ? 'text-rose-700'
+                    : 'text-slate-900'
+                }`}
+              >
+                {resumoEstoque?.itensAbaixoMinimo.length ?? 0}
+              </span>
+              <span className="text-xs text-slate-500">itens requerem reposição</span>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
+            <span
+              className={
+                (resumoEstoque?.itensAbaixoMinimo.length || 0) > 0
+                  ? 'text-rose-800 font-semibold'
+                  : 'text-emerald-700 font-medium'
+              }
+            >
+              {(resumoEstoque?.itensAbaixoMinimo.length || 0) > 0
+                ? 'Necessitam compra para estoque'
+                : 'Níveis de estoque normais'}
+            </span>
+            <button
+              onClick={() => onNavigateTab('estoque')}
+              className="font-semibold text-slate-900 hover:text-slate-700"
+            >
+              Ver no Estoque →
+            </button>
+          </div>
+        </div>
+
+        {/* Card 2: Sobras disponíveis */}
+        <div className="flex flex-col justify-between rounded-2xl border border-amber-200 bg-amber-50/40 p-5 shadow-2xs">
+          <div>
+            <div className="flex items-center justify-between text-xs font-medium text-amber-950">
+              <span className="font-semibold text-amber-900">Sobras disponíveis</span>
+              <Scissors className="h-4 w-4 text-amber-700" />
+            </div>
+            <div className="mt-3 flex items-baseline gap-2">
+              <span className="font-mono text-3xl font-bold tracking-tight text-amber-950">
+                {resumoEstoque?.sobrasDisponiveis.length ?? 0}
+              </span>
+              <span className="text-xs text-amber-800">retalhos cadastrados</span>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-between border-t border-amber-200/60 pt-3 text-xs">
+            <span className="text-amber-900 font-medium">Aproveitamento de matéria-prima</span>
+            <button
+              onClick={() => onNavigateTab('estoque')}
+              className="font-semibold text-amber-950 hover:text-amber-800"
+            >
+              Consultar sobras →
+            </button>
+          </div>
+        </div>
+
+        {/* Card 3: Reservas paradas */}
+        <div
+          className={`flex flex-col justify-between rounded-2xl border p-5 shadow-2xs transition-all ${
+            (resumoEstoque?.reservasParadas.length || 0) > 0
+              ? 'border-indigo-300 bg-indigo-50/50'
+              : 'border-slate-200 bg-white'
+          }`}
+        >
+          <div>
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+              <span className="font-semibold text-slate-700">Reservas paradas</span>
+              <Clock
+                className={`h-4 w-4 ${
+                  (resumoEstoque?.reservasParadas.length || 0) > 0
+                    ? 'text-indigo-600'
+                    : 'text-slate-400'
+                }`}
+              />
+            </div>
+            <div className="mt-3 flex items-baseline gap-2">
+              <span
+                className={`font-mono text-3xl font-bold tracking-tight ${
+                  (resumoEstoque?.reservasParadas.length || 0) > 0
+                    ? 'text-indigo-900'
+                    : 'text-slate-900'
+                }`}
+              >
+                {resumoEstoque?.reservasParadas.length ?? 0}
+              </span>
+              <span className="text-xs text-slate-500">
+                sem retirada há &gt;{resumoEstoque?.diasAlerta ?? 30} dias
+              </span>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
+            <span
+              className={
+                (resumoEstoque?.reservasParadas.length || 0) > 0
+                  ? 'text-indigo-800 font-semibold'
+                  : 'text-slate-500'
+              }
+            >
+              {(resumoEstoque?.reservasParadas.length || 0) > 0
+                ? 'Material reservado sem início de fabricação'
+                : 'Nenhuma reserva estagnada'}
+            </span>
+            <button
+              onClick={() => onNavigateTab('estoque')}
+              className="font-semibold text-slate-900 hover:text-slate-700"
+            >
+              Ver reservas →
+            </button>
           </div>
         </div>
       </div>
@@ -840,7 +1018,229 @@ export const PainelView: React.FC<PainelViewProps> = ({
       </div>
 
       {/* ========================================================================= */}
-      {/* 4. LISTA "PRÓXIMAS ENTREGAS" (ORDENADA POR PRAZO COM DIAS RESTANTES)      */}
+      {/* 4. COMPRAS E MATERIAIS: COMPRAS PENDENTES & PEÇAS AGUARDANDO MATERIAL     */}
+      {/* ========================================================================= */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* Card 1: Compras Pendentes */}
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+          <div>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                  <ShoppingCart className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Compras Pendentes
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Visão geral dos pedidos e entregas de matéria-prima e componentes
+                  </p>
+                </div>
+              </div>
+
+              {(resumoCompras?.atrasados.length || 0) > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 border border-rose-200 px-2 py-0.5 text-xs font-bold text-rose-700">
+                  <AlertTriangle className="h-3 w-3 text-rose-600" />
+                  <span>{resumoCompras?.atrasados.length} atrasado(s)</span>
+                </span>
+              )}
+            </div>
+
+            {/* Contadores por status */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 my-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-center">
+                <span className="block text-[10px] font-semibold text-slate-500 uppercase">
+                  A Solicitar
+                </span>
+                <span className="font-mono text-lg font-bold text-slate-800">
+                  {resumoCompras?.a_solicitar ?? 0}
+                </span>
+              </div>
+              <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-2.5 text-center">
+                <span className="block text-[10px] font-semibold text-blue-700 uppercase">
+                  Solicitados
+                </span>
+                <span className="font-mono text-lg font-bold text-blue-900">
+                  {resumoCompras?.solicitados ?? 0}
+                </span>
+              </div>
+              <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-2.5 text-center">
+                <span className="block text-[10px] font-semibold text-amber-800 uppercase">
+                  Comprados
+                </span>
+                <span className="font-mono text-lg font-bold text-amber-900">
+                  {resumoCompras?.comprados ?? 0}
+                </span>
+              </div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-2.5 text-center">
+                <span className="block text-[10px] font-semibold text-emerald-700 uppercase">
+                  Recebidos
+                </span>
+                <span className="font-mono text-lg font-bold text-emerald-900">
+                  {resumoCompras?.recebidos ?? 0}
+                </span>
+              </div>
+            </div>
+
+            {/* Lista de Atrasados */}
+            <div className="mt-3">
+              <span className="text-xs font-semibold text-slate-700 block mb-2">
+                Itens com Entrega em Atraso:
+              </span>
+              {(resumoCompras?.atrasados.length || 0) === 0 ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 flex items-center gap-2 text-xs text-emerald-800">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>Nenhum item com entrega em atraso no momento.</span>
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                  {resumoCompras?.atrasados.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between rounded-lg border border-rose-200 bg-rose-50/70 p-2 text-xs"
+                    >
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-1.5 font-medium text-slate-900 truncate">
+                          <span className="font-mono font-bold text-slate-700">
+                            {item.projeto_codigo || '—'}
+                          </span>
+                          <span className="text-slate-300">·</span>
+                          <span className="truncate">{item.componente_nome || item.descricao}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {item.especificacao || item.descricao} · {item.fornecedor_nome || 'Sem fornecedor'}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="inline-block rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                          +{item.diasAtraso}d atraso
+                        </span>
+                        <span className="block text-[10px] text-rose-800 font-mono mt-0.5">
+                          prev. {item.previsao_entrega ? formatDateBR(item.previsao_entrega) : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+            <span className="text-xs text-slate-500 font-mono">
+              Total de {resumoCompras?.total ?? 0} item(ns) registrados
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('compras')}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800"
+            >
+              <span>Ir para Compras</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Card 2: Peças Aguardando Material */}
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
+          <div>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                  <PackageCheck className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Peças Aguardando Material
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Peças fabricadas com operações cujo material bruto não foi recebido
+                  </p>
+                </div>
+              </div>
+
+              <span className="rounded-full bg-slate-100 border border-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700 font-mono">
+                {resumoCompras?.pecasAguardandoMaterial.length || 0} peça(s)
+              </span>
+            </div>
+
+            {/* Lista de Peças */}
+            <div className="mt-4">
+              {(resumoCompras?.pecasAguardandoMaterial.length || 0) === 0 ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 flex items-center gap-2 text-xs text-emerald-800">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>Todas as peças com roteiro já tiveram seu material recebido.</span>
+                </div>
+              ) : (
+                <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                  {resumoCompras?.pecasAguardandoMaterial.map((peca, idx) => (
+                    <div
+                      key={`${peca.projeto.id}-${peca.componente.id}-${idx}`}
+                      className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 text-xs hover:bg-slate-100/70 transition-colors"
+                    >
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-1.5 font-medium text-slate-900">
+                          <span className="font-mono font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 text-[11px]">
+                            {peca.projeto.codigo}
+                          </span>
+                          <span className="font-semibold text-slate-800 truncate">
+                            {peca.componente.codigo ? `${peca.componente.codigo} - ` : ''}
+                            {peca.componente.nome}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate mt-0.5">
+                          {peca.componente.material || 'Material não informado'} · {peca.componente.dimensoes || 'Sem dimensões'}
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0 flex flex-col items-end gap-1">
+                        {peca.statusMaterial === 'pendente_geracao' ? (
+                          <span className="inline-block rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                            Não gerado
+                          </span>
+                        ) : peca.statusMaterial === 'comprado' ? (
+                          <span className="inline-block rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+                            Comprado
+                          </span>
+                        ) : peca.statusMaterial === 'solicitado' ? (
+                          <span className="inline-block rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-800">
+                            Solicitado
+                          </span>
+                        ) : (
+                          <span className="inline-block rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                            A solicitar
+                          </span>
+                        )}
+                        <span className="text-[10px] font-mono text-slate-400">
+                          {peca.componente.operacoes.length} op(s)
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+            <span className="text-xs text-slate-500">
+              Acompanhe a chegada dos materiais antes de liberar usinagem
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('projetos')}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-900"
+            >
+              <span>Ver Projetos</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 5. LISTA "PRÓXIMAS ENTREGAS" (ORDENADA POR PRAZO COM DIAS RESTANTES)      */}
       {/* ========================================================================= */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xs">
         <div className="flex flex-col gap-2 p-5 border-b border-slate-100 sm:flex-row sm:items-center sm:justify-between">

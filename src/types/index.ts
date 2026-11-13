@@ -63,6 +63,8 @@ export interface Projeto {
   empresa_id: string; // UUID
   cliente_id: string; // UUID
   codigo: string;
+  orcamento_codigo?: string; // Código do orçamento (texto)
+  planejador?: string; // Planejador responsável (texto)
   descricao: string;
   prazo: string; // YYYY-MM-DD
   status: StatusProjeto;
@@ -79,10 +81,15 @@ export interface Componente {
   quantidade: number; // Inteiro >= 1, padrão 1
   material: string;
   tipo?: TipoComponente; // 'fabricado' | 'comprado' | 'estoque' (padrão 'fabricado')
+  formato?: string; // ex.: 'BLOCO', 'REDONDO', 'TUBO', 'CHAPA', 'OUTRO'
   dimensoes?: string;
+  peso_kg?: number; // Peso em kg (número, opcional)
+  peso_calculado?: boolean; // Se foi calculado automaticamente a partir do bloco
   tratamento?: string; // 2ª coluna de observações (tratamento/acabamento)
   id_refer_pai?: string;
   num_lista?: string;
+  data_lista?: string;
+  fornecedor_material?: string; // Fornecedor sugerido para matéria-prima ou item comprado
   observacoes?: string;
   status: StatusComponente;
   modelo_origem_id?: string; // UUID do modelo da biblioteca (se aplicável)
@@ -96,6 +103,7 @@ export interface Operacao {
   maquina_id?: string; // Legado para compatibilidade
   sequencia: number;
   descricao: string;
+  instrucoes?: string; // Instruções longas de execução / Plano de fabricação (até 5.000 caracteres)
   horas_estimadas?: number; // Opcional se terceirizado
   status: StatusOperacao;
 
@@ -129,6 +137,7 @@ export interface ModeloOperacao {
   modelo_componente_id: string; // UUID
   sequencia: number;
   descricao: string;
+  instrucoes?: string; // Instruções longas de execução / Plano de fabricação (até 5.000 caracteres)
   categoria: string; // Categoria do Centro de Custo (antigo tipo_maquina)
   tipo_maquina?: string; // Legado para compatibilidade
   centro_custo_id?: string; // UUID opcional do centro de custo preferencial
@@ -147,6 +156,11 @@ export interface ModeloComponente {
   nome: string;
   categoria: string;
   material: string;
+  formato?: string;
+  dimensoes?: string;
+  peso_kg?: number;
+  peso_calculado?: boolean;
+  tratamento?: string;
   observacoes?: string;
   operacoes: ModeloOperacao[];
   criado_em?: string;
@@ -244,6 +258,21 @@ export interface ConfiguracoesSistema {
   empresa_id: string;
   restringir_postos: boolean; // Padrão: true (Restringir operadores aos seus postos de trabalho)
   liberar_apenas_proxima_operacao: boolean; // Padrão: false (Liberar uma operação somente quando a anterior estiver concluída)
+
+  // Configurações da Empresa (tela só para admin: Folha de Processos / Plano de Fabricação)
+  empresa_nome?: string;
+  empresa_cnpj?: string;
+  empresa_endereco?: string;
+  empresa_telefone?: string;
+  empresa_logo?: string; // Imagem opcional em Base64 Data URL (até 500 KB)
+
+  // Configurações de Compras & Produção
+  avisar_operador_material_pendente?: boolean; // Padrão: false (Avisar o operador quando o material da peça ainda não foi recebido)
+
+  // Configurações de Estoque
+  permitir_saldo_negativo?: boolean; // Padrão: false (Permitir saída ou reserva acima do saldo disponível)
+  dias_alerta_reserva_parada?: number; // Padrão: 30 (Alerta de reservas ativas paradas há mais de N dias)
+
   atualizado_por?: string;
   atualizado_em?: string;
 }
@@ -251,6 +280,8 @@ export interface ConfiguracoesSistema {
 export type ViewTab =
   | 'painel'
   | 'projetos'
+  | 'compras'
+  | 'estoque'
   | 'biblioteca'
   | 'centros_custo'
   | 'maquinas'
@@ -259,6 +290,219 @@ export type ViewTab =
   | 'apontamento'
   | 'usuarios'
   | 'configuracoes'
+  | 'sincronizacao'
   | 'sem_permissao';
+
+// =========================================================================
+// MÓDULO: COMPRAS E MATERIAIS
+// =========================================================================
+
+export interface Fornecedor {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  nome: string;
+  contato?: string;
+  telefone?: string;
+  email?: string;
+  prazo_padrao_dias?: number;
+  observacoes?: string;
+  ativo: boolean;
+  criado_em?: string;
+}
+
+export type TipoItemCompra = 'materia_prima' | 'item_comercial' | 'reposicao';
+export type UnidadeItemCompra = 'un' | 'kg' | 'm' | 'pç';
+export type StatusItemCompra =
+  | 'a_solicitar'
+  | 'solicitado'
+  | 'comprado'
+  | 'recebido'
+  | 'cancelado'
+  | 'atendido_estoque';
+
+export interface ItemCompra {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  projeto_id?: string; // UUID (opcional para reposição ou compras gerais)
+  componente_id?: string; // UUID (origem, opcional para reposição)
+  item_estoque_id?: string; // UUID do ItemEstoque vinculado
+  movimento_entrada_id?: string; // UUID do MovimentoEstoque de entrada gerado
+  tipo: TipoItemCompra; // 'materia_prima' | 'item_comercial' | 'reposicao'
+  descricao: string;
+  especificacao: string; // material, formato e dimensões em texto
+  quantidade: number;
+  unidade: UnidadeItemCompra; // 'un' | 'kg' | 'm' | 'pç'
+  peso_kg?: number;
+  fornecedor_id?: string;
+  numero_lista?: string;
+  data_lista?: string;
+  status: StatusItemCompra;
+  data_solicitacao?: string; // YYYY-MM-DD
+  numero_pedido?: string;
+  previsao_entrega?: string; // YYYY-MM-DD
+  data_recebimento?: string; // YYYY-MM-DD
+  nota_fiscal?: string;
+  observacoes?: string;
+  valor_estimado?: number;
+  valor_real?: number;
+  criado_em: string; // ISO string
+}
+
+export interface ItemCompraComDetalhes extends ItemCompra {
+  projeto?: Projeto;
+  componente?: Componente;
+  fornecedor?: Fornecedor;
+  item_estoque?: ItemEstoque;
+  atrasado?: boolean;
+  diasAtraso?: number;
+}
+
+// =========================================================================
+// MÓDULO: ESTOQUE E MATERIAIS
+// =========================================================================
+
+export type CategoriaItemEstoque =
+  | 'materia_prima'
+  | 'item_comercial'
+  | 'consumivel'
+  | 'outro';
+
+export type TipoControleEstoque = 'quantidade' | 'unidade_fisica';
+export type UnidadeMedidaEstoque = 'un' | 'kg' | 'm' | 'pç';
+
+export interface ItemEstoque {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  codigo: string; // único por empresa
+  descricao: string;
+  categoria: CategoriaItemEstoque;
+  unidade: UnidadeMedidaEstoque;
+  especificacao: string; // material, norma, dimensões em texto
+  tipo_controle: TipoControleEstoque;
+  estoque_minimo?: number;
+  localizacao_padrao?: string;
+  saldo: number; // mantido por transação atômica
+  custo_medio?: number; // Custo médio móvel (R$) mantido nas entradas
+  ativo: boolean;
+  criado_em: string; // ISO string
+}
+
+export type StatusUnidadeEstoque =
+  | 'disponivel'
+  | 'reservada'
+  | 'consumida'
+  | 'descartada';
+
+export type OrigemUnidadeEstoque = 'compra' | 'sobra' | 'ajuste';
+
+export interface UnidadeEstoque {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  item_id: string; // UUID do ItemEstoque pai
+  etiqueta: string; // código único legível, ex: 'PE-2026-0001', 'SOB-0042'
+  material?: string;
+  formato?: string; // BLOCO, BARRA_REDONDA, BARRA_CHATA, TUBO, CHAPA, OUTRO
+  comprimento_mm?: number;
+  largura_mm?: number;
+  espessura_mm?: number;
+  diametro_mm?: number; // para barras cilíndricas
+  peso_kg?: number;
+  custo_unitario?: number; // Custo próprio da peça física (R$)
+  lote_ou_certificado?: string;
+  localizacao?: string;
+  origem: OrigemUnidadeEstoque;
+  origem_projeto_id?: string;
+  origem_componente_id?: string;
+  status: StatusUnidadeEstoque;
+  observacoes?: string;
+  criado_em: string; // ISO string
+}
+
+export type TipoMovimentoEstoque = 'entrada' | 'saida' | 'ajuste';
+
+export type MotivoMovimentoEstoque =
+  | 'compra'
+  | 'producao'
+  | 'inventario'
+  | 'perda'
+  | 'devolucao'
+  | 'outro';
+
+export interface MovimentoEstoque {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  item_id: string; // UUID do ItemEstoque
+  unidade_id?: string; // UUID da UnidadeEstoque quando for peça física
+  tipo: TipoMovimentoEstoque;
+  quantidade: number; // sempre positiva
+  data_hora: string; // ISO string
+  usuario_id: string;
+  usuario_nome?: string;
+  projeto_id?: string;
+  componente_id?: string;
+  item_compra_id?: string;
+  motivo: MotivoMovimentoEstoque;
+  custo_unitario?: number; // Custo unitário no momento do movimento (R$)
+  custo_total?: number; // Quantidade * custo_unitario (R$)
+  observacoes?: string;
+}
+
+export type StatusReservaEstoque = 'ativa' | 'consumida' | 'cancelada';
+
+export interface ReservaEstoque {
+  id: string; // UUID
+  empresa_id: string; // UUID
+  item_id: string; // UUID do ItemEstoque
+  unidade_id?: string; // UUID da UnidadeEstoque se for peça específica
+  quantidade: number;
+  projeto_id?: string;
+  componente_id?: string;
+  status: StatusReservaEstoque;
+  criado_em: string; // ISO string
+}
+
+export interface SugestaoEstoqueItem {
+  tipo: 'item' | 'sobra';
+  itemId: string;
+  itemCodigo: string;
+  itemDescricao: string;
+  disponivel: number;
+  unidade: string;
+  unidadeId?: string;
+  etiqueta?: string;
+  dimensoes?: string;
+  peso_kg?: number;
+  localizacao?: string;
+}
+
+// Modelos enriquecidos para exibição em tabelas e drawers
+export interface ItemEstoqueComDetalhes extends ItemEstoque {
+  reservado: number;
+  disponivel: number;
+  abaixo_minimo: boolean;
+  total_unidades_fisicas?: number;
+  unidades_disponiveis?: UnidadeEstoque[];
+}
+
+export interface UnidadeEstoqueComDetalhes extends UnidadeEstoque {
+  item?: ItemEstoque;
+  origem_projeto_codigo?: string;
+  origem_componente_nome?: string;
+}
+
+export interface MovimentoEstoqueComDetalhes extends MovimentoEstoque {
+  item?: ItemEstoque;
+  unidade?: UnidadeEstoque;
+  projeto_codigo?: string;
+  componente_nome?: string;
+}
+
+export interface ReservaEstoqueComDetalhes extends ReservaEstoque {
+  item?: ItemEstoque;
+  unidade?: UnidadeEstoque;
+  projeto_codigo?: string;
+  componente_nome?: string;
+}
+
 
 

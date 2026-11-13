@@ -20,6 +20,8 @@ import {
   Shield,
   Sliders,
   Trash2,
+  ShoppingCart,
+  Package,
 } from 'lucide-react';
 import { DEFAULT_EMPRESA_ID } from '../../utils/uuid';
 import { useAuth } from '../../auth/AuthContext';
@@ -53,6 +55,18 @@ const ALL_NAV_ITEMS: NavItem[] = [
     label: 'Projetos',
     icon: FolderKanban,
     description: 'Moldes, estampos e peças',
+  },
+  {
+    id: 'compras',
+    label: 'Compras',
+    icon: ShoppingCart,
+    description: 'Materiais e compras do projeto',
+  },
+  {
+    id: 'estoque',
+    label: 'Estoque',
+    icon: Package,
+    description: 'Materiais, sobras e inventário',
   },
   {
     id: 'biblioteca',
@@ -95,6 +109,12 @@ const ALL_NAV_ITEMS: NavItem[] = [
     label: 'Configurações',
     icon: Sliders,
     description: 'Regras e postos de trabalho',
+  },
+  {
+    id: 'sincronizacao',
+    label: 'Sincronização',
+    icon: RotateCcw,
+    description: 'Backup e sincronização com servidor',
   },
 ];
 

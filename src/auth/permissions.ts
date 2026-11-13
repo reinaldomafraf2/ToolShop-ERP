@@ -7,6 +7,8 @@ export type Recurso =
   | 'apontamento'
   | 'painel'
   | 'projetos'
+  | 'compras'
+  | 'estoque'
   | 'biblioteca'
   | 'custos'
   | 'clientes'
@@ -14,7 +16,8 @@ export type Recurso =
   | 'maquinas'
   | 'operadores'
   | 'usuarios'
-  | 'configuracoes';
+  | 'configuracoes'
+  | 'sincronizacao';
 
 /**
  * AÇÕES SOBRE OS RECURSOS
@@ -34,20 +37,15 @@ export type Acao =
  * MATRIZ CENTRAL DE PERMISSÕES
  * Única fonte de verdade para autorização e controle de acesso no ToolShop ERP.
  * Conforme especificação:
- * - apontamento: operador = criar/ver apenas os próprios; lider = ver e corrigir os da equipe; gerente/admin = tudo
- * - painel: lider, gerente, admin (somente leitura)
- * - projetos: lider = ver; gerente/admin = ver, criar, editar, excluir, importar
- * - biblioteca: lider = ver; gerente/admin = ver, criar, editar, excluir, importar
- * - custos e valores (valor_unitario, custo_hora, custo real): somente gerente e admin
- * - clientes, centros_custo, operadores: gerente/admin = tudo; lider = ver
- * - usuarios: somente admin
- * - configuracoes: gerente e admin = tudo; lider = ver
+ * - compras: operador = sem acesso; lider = ver e registrar recebimento (sem valores); gerente/admin = tudo
  */
 export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly Acao[]>> = {
   operador: {
     apontamento: ['ver_proprio', 'criar_proprio'],
     painel: [],
     projetos: [],
+    compras: [],
+    estoque: [],
     biblioteca: [],
     custos: [],
     clientes: [],
@@ -56,11 +54,14 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     operadores: [],
     usuarios: [],
     configuracoes: [],
+    sincronizacao: [],
   },
   lider: {
     apontamento: ['ver', 'ver_proprio', 'criar', 'criar_proprio', 'ajustar'], // ver e corrigir os da equipe
     painel: ['ver'], // somente leitura
     projetos: ['ver'], // somente leitura
+    compras: ['ver', 'editar'], // ver tela compras e registrar 'recebido', sem ver custos
+    estoque: ['ver', 'criar', 'editar'], // ver tudo, registrar entradas, saídas, reservas e sobras; sem ajustes de inventário
     biblioteca: ['ver'], // somente leitura
     custos: [], // sem acesso a custos e valores
     clientes: ['ver'], // somente leitura
@@ -69,11 +70,14 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     operadores: ['ver'], // somente leitura
     usuarios: [],
     configuracoes: ['ver'],
+    sincronizacao: [],
   },
   gerente: {
     apontamento: ['ver', 'ver_proprio', 'criar', 'criar_proprio', 'ajustar', 'excluir', 'tudo'],
     painel: ['ver'],
     projetos: ['ver', 'criar', 'editar', 'excluir', 'importar', 'tudo'],
+    compras: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
+    estoque: ['ver', 'criar', 'editar', 'ajustar', 'excluir', 'tudo'],
     biblioteca: ['ver', 'criar', 'editar', 'excluir', 'importar', 'tudo'],
     custos: ['ver', 'tudo'], // acesso a valor_unitario e custo real
     clientes: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
@@ -82,11 +86,14 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     operadores: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     usuarios: [], // somente admin
     configuracoes: ['ver', 'editar', 'tudo'],
+    sincronizacao: [],
   },
   admin: {
     apontamento: ['ver', 'ver_proprio', 'criar', 'criar_proprio', 'ajustar', 'excluir', 'tudo'],
     painel: ['ver'],
     projetos: ['ver', 'criar', 'editar', 'excluir', 'importar', 'tudo'],
+    compras: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
+    estoque: ['ver', 'criar', 'editar', 'ajustar', 'excluir', 'tudo'],
     biblioteca: ['ver', 'criar', 'editar', 'excluir', 'importar', 'tudo'],
     custos: ['ver', 'tudo'],
     clientes: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
@@ -95,6 +102,7 @@ export const MATRIZ_PERMISSOES: Record<PerfilUsuario, Record<Recurso, readonly A
     operadores: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     usuarios: ['ver', 'criar', 'editar', 'excluir', 'tudo'],
     configuracoes: ['ver', 'editar', 'tudo'],
+    sincronizacao: ['ver', 'tudo'],
   },
 } as const;
 
@@ -146,6 +154,10 @@ export function canAccessTab(
       return can(perfil, 'ver', 'painel');
     case 'projetos':
       return can(perfil, 'ver', 'projetos');
+    case 'compras':
+      return can(perfil, 'ver', 'compras');
+    case 'estoque':
+      return can(perfil, 'ver', 'estoque');
     case 'biblioteca':
       return can(perfil, 'ver', 'biblioteca');
     case 'centros_custo':
@@ -161,6 +173,8 @@ export function canAccessTab(
       return can(perfil, 'ver', 'usuarios');
     case 'configuracoes':
       return can(perfil, 'ver', 'configuracoes');
+    case 'sincronizacao':
+      return can(perfil, 'ver', 'sincronizacao');
     case 'sem_permissao':
       return true;
     default:

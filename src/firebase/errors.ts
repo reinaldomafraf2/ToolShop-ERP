@@ -1,4 +1,5 @@
 import { auth } from './config';
+import { syncStatusService } from '../services/syncStatusService';
 
 export enum OperationType {
   CREATE = 'create',
@@ -31,6 +32,7 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): never {
+  syncStatusService.recordError(error, operationType);
   const currentUser = auth.currentUser;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),

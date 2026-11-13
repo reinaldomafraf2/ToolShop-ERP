@@ -4,11 +4,13 @@ import { Menu, Layers, LogOut, User, Clock, AlertTriangle, KeyRound } from 'luci
 import { useAuth } from '../../auth/AuthContext';
 import { PERFIL_CONFIG } from '../../auth/permissions';
 import { AlterarSenhaModal } from '../auth/AlterarSenhaModal';
+import { SyncStatusBadge } from '../sync/SyncStatusBadge';
 
 interface HeaderProps {
   currentTab: ViewTab;
   onToggleSidebarMobile: () => void;
   activeShiftsCount: number;
+  onNavigateToSync?: () => void;
 }
 
 const TAB_TITLES: Record<ViewTab, { title: string; subtitle: string }> = {
@@ -19,6 +21,14 @@ const TAB_TITLES: Record<ViewTab, { title: string; subtitle: string }> = {
   projetos: {
     title: 'Projetos de Ferramentaria',
     subtitle: 'Moldes, estampos e dispositivos com estrutura de componentes e operações',
+  },
+  compras: {
+    title: 'Compras e Materiais',
+    subtitle: 'Gestão de matéria-prima, componentes comerciais, fornecedores e entregas',
+  },
+  estoque: {
+    title: 'Estoque e Almoxarifado',
+    subtitle: 'Gestão de materiais, blocos, retalhos físicos, reservas e inventário',
   },
   biblioteca: {
     title: 'Biblioteca Técnica',
@@ -52,6 +62,10 @@ const TAB_TITLES: Record<ViewTab, { title: string; subtitle: string }> = {
     title: 'Configurações de Chão de Fábrica',
     subtitle: 'Parâmetros de restrição de postos e regras de sequenciamento de operações',
   },
+  sincronizacao: {
+    title: 'Sincronização e Backup',
+    subtitle: 'Backup local do navegador e sincronização controlada com o servidor',
+  },
   sem_permissao: {
     title: 'Acesso Restrito',
     subtitle: 'Página sem permissão de acesso para o perfil atual',
@@ -63,6 +77,7 @@ export const Header: React.FC<HeaderProps> = ({
   currentTab,
   onToggleSidebarMobile,
   activeShiftsCount,
+  onNavigateToSync,
 }) => {
   const { user, perfil, logout, sessionSecondsRemaining, isExpiringSoon } = useAuth();
   const meta = TAB_TITLES[currentTab] || {
@@ -110,6 +125,9 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5 sm:gap-3">
+          {/* Indicador de Sincronização (Sempre visível no topo) */}
+          <SyncStatusBadge onNavigateToSync={onNavigateToSync} />
+
           {/* Indicador de Máquinas em Operação */}
           <div className="hidden sm:flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700">
             <Layers className="h-3.5 w-3.5 text-slate-500" />

@@ -5,8 +5,10 @@ import {
   Maquina,
   CentroCusto,
   OperacaoComDetalhes,
+  ConfiguracoesSistema,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
+import { comprasService } from '../services/comprasService';
 import { Modal } from '../components/common/Modal';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
 import { EmptyState } from '../components/common/EmptyState';
@@ -32,6 +34,8 @@ import {
   Info,
   CalendarDays,
   Hash,
+  FileText,
+  BookOpen,
 } from 'lucide-react';
 import { formatDateTimeBR, formatHours } from '../utils/formatters';
 
@@ -153,6 +157,10 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
   const [searchOp, setSearchOp] = useState('');
   const [maquinaFilter, setMaquinaFilter] = useState<string>('Todas');
 
+  // Configurações do sistema para verificação de avisos (ex.: material pendente)
+  const [configuracoes, setConfiguracoes] = useState<ConfiguracoesSistema | null>(null);
+  const [materialRecebidoSet, setMaterialRecebidoSet] = useState<Set<string>>(new Set());
+
   // Estado do cronômetro em tempo real (segundos decorridos)
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
 
@@ -182,6 +190,19 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
     fimStr: '',
     motivo: '',
   });
+
+  // Painel de Leitura de Instruções (Plano de Fabricação)
+  const [leituraInstrucoes, setLeituraInstrucoes] = useState<{
+    isOpen: boolean;
+    op?: OperacaoComDetalhes;
+    title: string;
+    componenteNome?: string;
+    projetoCodigo?: string;
+    instrucoes: string;
+    centroCustoNome?: string;
+    sequencia?: number;
+    horasEstimadas?: number;
+  } | null>(null);
 
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
@@ -231,6 +252,29 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
   useEffect(() => {
     loadOperacoesDisponiveis();
   }, [validApontamentos, selectedOperador?.id, loadOperacoesDisponiveis]);
+
+  // Carrega configurações e status de recebimento de materiais para avisos visuais
+  useEffect(() => {
+    toolShopService.getConfiguracoes().then(setConfiguracoes).catch(console.warn);
+    comprasService
+      .getItensCompra()
+      .then((itens) => {
+        const recebidos = new Set<string>();
+        itens.forEach((it) => {
+          if (
+            it.tipo === 'materia_prima' &&
+            it.componente_id &&
+            (it.status === 'recebido' || it.status === 'atendido_estoque')
+          ) {
+            recebidos.add(it.componente_id);
+          }
+        });
+        setMaterialRecebidoSet(recebidos);
+      })
+      .catch((err) =>
+        console.warn('Erro ao carregar status de matéria-prima para apontamento:', err)
+      );
+  }, []);
 
   // Histórico de apontamentos do dia do operador selecionado
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
@@ -483,15 +527,74 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
           >
             {op.status}
           </span>
+
+          {/* Alerta de Material Pendente (quando configurado no sistema) */}
+          {configuracoes?.avisar_operador_material_pendente &&
+            op.componente?.tipo !== 'comprado' &&
+            op.componente?.tipo !== 'estoque' &&
+            !materialRecebidoSet.has(op.componente_id || op.componente?.id || '') && (
+              <span
+                className="inline-flex items-center gap-1 rounded bg-amber-100 border border-amber-300 px-2 py-0.5 text-[10px] font-bold text-amber-900"
+                title="A matéria-prima desta peça ainda não consta como recebida no almoxarifado/compras"
+              >
+                <AlertTriangle className="h-3 w-3 text-amber-700 shrink-0" />
+                <span>Material não recebido</span>
+              </span>
+            )}
         </div>
 
         {/* Descrição e Sequência */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="inline-flex items-center gap-0.5 font-mono text-xs font-bold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
             <Hash className="h-3 w-3 text-slate-400" />
             <span>{op.sequencia}</span>
           </span>
-          <h4 className="text-sm font-bold text-slate-900 truncate">{op.descricao}</h4>
+          <h4
+            className={`text-sm font-bold text-slate-900 ${
+              op.instrucoes ? 'cursor-pointer hover:text-amber-800' : ''
+            }`}
+            onClick={() => {
+              if (op.instrucoes) {
+                setLeituraInstrucoes({
+                  isOpen: true,
+                  op,
+                  title: op.descricao,
+                  componenteNome: op.componente?.nome,
+                  projetoCodigo: op.projeto?.codigo,
+                  instrucoes: op.instrucoes,
+                  centroCustoNome: (op.centro_custo || op.maquina)?.nome,
+                  sequencia: op.sequencia,
+                  horasEstimadas: op.horas_estimadas,
+                });
+              }
+            }}
+          >
+            {op.descricao}
+          </h4>
+
+          {op.instrucoes && (
+            <button
+              type="button"
+              onClick={() =>
+                setLeituraInstrucoes({
+                  isOpen: true,
+                  op,
+                  title: op.descricao,
+                  componenteNome: op.componente?.nome,
+                  projetoCodigo: op.projeto?.codigo,
+                  instrucoes: op.instrucoes || '',
+                  centroCustoNome: (op.centro_custo || op.maquina)?.nome,
+                  sequencia: op.sequencia,
+                  horasEstimadas: op.horas_estimadas,
+                })
+              }
+              className="inline-flex items-center gap-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 text-[11px] font-bold transition-colors"
+              title="Ler instruções técnicas de fabricação"
+            >
+              <FileText className="h-3.5 w-3.5 text-amber-600" />
+              <span>Instruções (Plano)</span>
+            </button>
+          )}
         </div>
 
         {/* Centro de Custo e Horas */}
@@ -513,16 +616,43 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
         </div>
       </div>
 
-      {/* Botão Grande de Iniciar Apontamento */}
-      <button
-        type="button"
-        onClick={() => handleIniciarApontamento(op)}
-        disabled={isSubmitting}
-        className="flex min-h-[50px] shrink-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white shadow-xs transition-transform hover:bg-slate-800 active:scale-98 md:w-auto"
-      >
-        <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
-        <span>Iniciar Apontamento</span>
-      </button>
+      {/* Ações da Operação */}
+      <div className="flex items-center gap-2 shrink-0 self-stretch md:self-center">
+        {op.instrucoes && (
+          <button
+            type="button"
+            onClick={() =>
+              setLeituraInstrucoes({
+                isOpen: true,
+                op,
+                title: op.descricao,
+                componenteNome: op.componente?.nome,
+                projetoCodigo: op.projeto?.codigo,
+                instrucoes: op.instrucoes || '',
+                centroCustoNome: (op.centro_custo || op.maquina)?.nome,
+                sequencia: op.sequencia,
+                horasEstimadas: op.horas_estimadas,
+              })
+            }
+            className="flex min-h-[50px] items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-xs font-bold text-amber-950 shadow-2xs hover:bg-amber-100 active:scale-98 transition-all"
+            title="Visualizar instruções e plano de fabricação antes de iniciar"
+          >
+            <FileText className="h-4 w-4 text-amber-700" />
+            <span className="hidden sm:inline">Ver Instruções</span>
+          </button>
+        )}
+
+        {/* Botão Grande de Iniciar Apontamento */}
+        <button
+          type="button"
+          onClick={() => handleIniciarApontamento(op)}
+          disabled={isSubmitting}
+          className="flex min-h-[50px] flex-1 md:flex-initial items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white shadow-xs transition-transform hover:bg-slate-800 active:scale-98"
+        >
+          <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
+          <span>Iniciar Apontamento</span>
+        </button>
+      </div>
     </div>
   );
 
@@ -698,6 +828,32 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
                   <span>Iniciado às {formatDateTimeBR(activeApontamento.inicio)}</span>
                 </div>
               </div>
+
+              {/* Botão de Instruções / Plano de Fabricação durante o apontamento */}
+              {activeApontamento.operacao?.instrucoes ? (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLeituraInstrucoes({
+                        isOpen: true,
+                        title: activeApontamento.operacao?.descricao || 'Operação',
+                        componenteNome: activeApontamento.componente?.nome,
+                        projetoCodigo: activeApontamento.projeto?.codigo,
+                        instrucoes: activeApontamento.operacao?.instrucoes || '',
+                        centroCustoNome:
+                          (activeApontamento.centro_custo || activeApontamento.maquina)?.nome,
+                        sequencia: activeApontamento.operacao?.sequencia,
+                        horasEstimadas: activeApontamento.operacao?.horas_estimadas,
+                      })
+                    }
+                    className="inline-flex items-center gap-2 rounded-xl bg-amber-400 text-slate-950 px-4 py-2 text-xs font-bold shadow-md hover:bg-amber-300 transition-colors"
+                  >
+                    <FileText className="h-4 w-4 text-slate-950" />
+                    <span>Ver Instruções / Plano de Fabricação Desta Peça</span>
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             {/* Cronômetro e Botão Gigante de Finalizar */}
@@ -1165,6 +1321,91 @@ export const ApontamentoView: React.FC<ApontamentoViewProps> = ({
           </div>
         </div>
       </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL DE LEITURA DE INSTRUÇÕES DE EXECUÇÃO (PLANO DE FABRICAÇÃO)         */}
+      {/* ========================================================================= */}
+      {leituraInstrucoes && (
+        <Modal
+          isOpen={leituraInstrucoes.isOpen}
+          onClose={() => setLeituraInstrucoes(null)}
+          title={`Plano de Fabricação: ${leituraInstrucoes.title}`}
+          subtitle={`Projeto: ${leituraInstrucoes.projetoCodigo || '—'} · Peça: ${leituraInstrucoes.componenteNome || '—'}`}
+          maxWidth="2xl"
+        >
+          <div className="space-y-4">
+            {/* Cabeçalho Técnico da Operação */}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-mono font-bold text-slate-800 bg-white border border-slate-300 rounded px-2 py-0.5">
+                  Seq {leituraInstrucoes.sequencia || '—'}
+                </span>
+                <span className="font-semibold text-slate-700">
+                  {leituraInstrucoes.centroCustoNome ? `Posto: ${leituraInstrucoes.centroCustoNome}` : ''}
+                </span>
+              </div>
+              {leituraInstrucoes.horasEstimadas ? (
+                <div className="flex items-center gap-1 font-mono text-slate-600">
+                  <Clock className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Tempo Estimado: {formatHours(leituraInstrucoes.horasEstimadas)}</span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Painel de Leitura com fonte legível, monospace e rolagem */}
+            <div className="rounded-xl border-2 border-slate-800 bg-slate-900 p-4 text-slate-100 shadow-inner">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+                <span className="text-[11px] font-bold tracking-wider uppercase text-amber-400 flex items-center gap-1.5">
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Instruções Técnicas de Execução</span>
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  {leituraInstrucoes.instrucoes.length} caracteres
+                </span>
+              </div>
+
+              {leituraInstrucoes.instrucoes ? (
+                <div className="max-h-[55vh] overflow-y-auto pr-2 font-mono text-xs sm:text-sm leading-relaxed whitespace-pre-wrap select-text text-amber-50">
+                  {leituraInstrucoes.instrucoes}
+                </div>
+              ) : (
+                <div className="py-6 text-center text-xs text-slate-400 italic">
+                  Nenhuma instrução específica cadastrada para esta operação.
+                </div>
+              )}
+            </div>
+
+            {/* Botões do Rodapé */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setLeituraInstrucoes(null)}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Fechar Leitura
+              </button>
+
+              {leituraInstrucoes.op && !activeApontamento && (
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={() => {
+                    const opToStart = leituraInstrucoes.op;
+                    setLeituraInstrucoes(null);
+                    if (opToStart) {
+                      handleIniciarApontamento(opToStart);
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-slate-800 active:scale-98"
+                >
+                  <Play className="h-4 w-4 fill-amber-400 text-amber-400" />
+                  <span>Iniciar Apontamento Desta Operação</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

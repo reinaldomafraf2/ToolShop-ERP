@@ -706,8 +706,14 @@ export class ToolShopService {
       data.sequencia = maxSeq + 10;
     }
 
+    let instrucoes = data.instrucoes;
+    if (instrucoes && instrucoes.length > 5000) {
+      instrucoes = instrucoes.substring(0, 5000);
+    }
+
     return this.operacoesRepo.create({
       ...data,
+      instrucoes,
       centro_custo_id: centroCustoId,
       maquina_id: centroCustoId,
     });
@@ -721,6 +727,9 @@ export class ToolShopService {
       throw new Error('As horas estimadas devem ser um valor numérico maior que zero.');
     }
     const cleanUpdates = { ...updates };
+    if (cleanUpdates.instrucoes && cleanUpdates.instrucoes.length > 5000) {
+      cleanUpdates.instrucoes = cleanUpdates.instrucoes.substring(0, 5000);
+    }
     if (cleanUpdates.centro_custo_id && !cleanUpdates.maquina_id) {
       cleanUpdates.maquina_id = cleanUpdates.centro_custo_id;
     }
@@ -1346,6 +1355,7 @@ export class ToolShopService {
             maquina_id: chosenCentroId,
             sequencia: op.sequencia || 10,
             descricao: op.descricao,
+            instrucoes: (op as any).instrucoes || undefined,
             horas_estimadas: op.horas_estimadas,
             status: 'Pendente',
           });
@@ -1421,6 +1431,7 @@ export class ToolShopService {
               modelo_componente_id: existing.id,
               sequencia: op.sequencia || (idx + 1) * 10,
               descricao: op.descricao,
+              instrucoes: (op as any).instrucoes || undefined,
               categoria: op.tipo_maquina || (op as any).categoria || 'Geral',
               tipo_maquina: op.tipo_maquina || (op as any).categoria,
               horas_estimadas: op.horas_estimadas,
@@ -1449,6 +1460,7 @@ export class ToolShopService {
             modelo_componente_id: novoModeloId,
             sequencia: op.sequencia || (idx + 1) * 10,
             descricao: op.descricao,
+            instrucoes: (op as any).instrucoes || undefined,
             categoria: op.tipo_maquina || (op as any).categoria || 'Geral',
             tipo_maquina: op.tipo_maquina || (op as any).categoria,
             horas_estimadas: op.horas_estimadas,

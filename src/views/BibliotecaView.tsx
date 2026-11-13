@@ -5,6 +5,7 @@ import {
   TipoMaquina,
   HistoricoImportacao,
   Maquina,
+  ConfiguracoesSistema,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
 import { useAuth } from '../auth/AuthContext';
@@ -12,6 +13,7 @@ import { Modal } from '../components/common/Modal';
 import { ConfirmDeleteModal } from '../components/common/ConfirmDeleteModal';
 import { FeedbackAlert } from '../components/common/FeedbackAlert';
 import { EmptyState } from '../components/common/EmptyState';
+import { FolhaProcessosModal } from '../components/common/FolhaProcessosModal';
 import {
   downloadPlanilhaModeloBiblioteca,
   parseArquivoBiblioteca,
@@ -99,6 +101,7 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
       id: string;
       sequencia: number;
       descricao: string;
+      instrucoes?: string;
       tipo_maquina: TipoMaquina;
       horas_estimadas: string;
       prazo_dias?: number;
@@ -122,18 +125,21 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
 
   // --- MODAL FOLHA DE PROCESSOS DO MODELO ---
   const [folhaProcessoModelo, setFolhaProcessoModelo] = useState<ModeloComponente | null>(null);
+  const [configEmpresa, setConfigEmpresa] = useState<ConfiguracoesSistema | null>(null);
 
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [modList, histList, maqList] = await Promise.all([
+      const [modList, histList, maqList, config] = await Promise.all([
         toolShopService.getModelos(),
         toolShopService.getHistoricoImportacoes(30),
         toolShopService.getMaquinas(),
+        toolShopService.getConfiguracoes().catch(() => null),
       ]);
       setModelos(modList);
       setHistorico(histList);
       setMaquinas(maqList);
+      if (config) setConfigEmpresa(config);
     } catch (err) {
       console.error('Erro ao carregar biblioteca:', err);
       setFeedback({ type: 'error', message: 'Falha ao carregar dados da biblioteca.' });
@@ -252,6 +258,9 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
     }
   };
 
+  const [openInstructionIdx, setOpenInstructionIdx] = useState<Record<number, boolean>>({});
+  const [expandedModelOpInstructions, setExpandedModelOpInstructions] = useState<Record<string, boolean>>({});
+
   // --- CRUD MANUAL DE MODELO ---
   const handleOpenCreateModal = () => {
     setEditingModelo(null);
@@ -267,6 +276,7 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
         id: `mop_${Date.now()}_1`,
         sequencia: 10,
         descricao: 'Desbaste e esquadrejamento de faces',
+        instrucoes: 'LADO SUPERIOR:\n#CALÇO#\n_facear 1mm;\n_esquadrejar cantos;',
         tipo_maquina: 'Fresa',
         horas_estimadas: '4,0',
       },
@@ -274,10 +284,12 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
         id: `mop_${Date.now()}_2`,
         sequencia: 20,
         descricao: 'Usinagem CNC de alta velocidade',
+        instrucoes: 'DESBASTE E ACABAMENTO 3D:\n_fresar alojamentos conforme 3D;\n_furação de roscas e passagens;',
         tipo_maquina: 'CNC',
         horas_estimadas: '8,0',
       },
     ]);
+    setOpenInstructionIdx({});
     setFormErrors({});
     setIsEditModalOpen(true);
   };
@@ -296,12 +308,14 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
         id: op.id,
         sequencia: op.sequencia,
         descricao: op.descricao,
+        instrucoes: op.instrucoes || '',
         tipo_maquina: op.categoria || op.tipo_maquina || 'CNC',
         horas_estimadas: op.horas_estimadas ? String(op.horas_estimadas).replace('.', ',') : '',
         prazo_dias: op.prazo_dias,
         fornecedor: op.fornecedor,
       }))
     );
+    setOpenInstructionIdx({});
     setFormErrors({});
     setIsEditModalOpen(true);
   };
@@ -317,6 +331,7 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
         id: `mop_${Date.now()}_${Math.random()}`,
         sequencia: nextSeq,
         descricao: '',
+        instrucoes: '',
         tipo_maquina: 'CNC',
         horas_estimadas: '4,0',
       },
@@ -344,6 +359,9 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
       if (!op.descricao.trim()) {
         errors[`op_desc_${idx}`] = 'Descrição obrigatória';
       }
+      if (op.instrucoes && op.instrucoes.length > 5000) {
+        errors[`op_inst_${idx}`] = 'Instruções de execução não podem ultrapassar 5.000 caracteres.';
+      }
       const maqMatch = maquinas.find(
         (m) =>
           m.categoria === op.tipo_maquina ||
@@ -360,12 +378,13 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
         }
       }
 
-      if (!errors[`op_desc_${idx}`] && !errors[`op_hora_${idx}`]) {
+      if (!errors[`op_desc_${idx}`] && !errors[`op_hora_${idx}`] && !errors[`op_inst_${idx}`]) {
         operacoesSanitizadas.push({
           id: op.id.startsWith('mop_') ? op.id : `mop_${Date.now()}_${idx}`,
           modelo_componente_id: editingModelo ? editingModelo.id : '',
           sequencia: op.sequencia || (idx + 1) * 10,
           descricao: op.descricao.trim(),
+          instrucoes: op.instrucoes?.trim() ? op.instrucoes.slice(0, 5000) : undefined,
           categoria: op.tipo_maquina,
           tipo_maquina: op.tipo_maquina,
           horas_estimadas: !isNaN(horasNum) && horasNum > 0 ? horasNum : 0,
@@ -723,25 +742,60 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100 bg-white">
-                                {modelo.operacoes.map((op) => (
-                                  <tr key={op.id} className="hover:bg-slate-50/50">
-                                    <td className="py-2 px-3 font-mono font-bold text-slate-500">
-                                      {op.sequencia}
-                                    </td>
-                                    <td className="py-2 px-3 font-medium text-slate-900">
-                                      {op.descricao}
-                                    </td>
-                                    <td className="py-2 px-3">
-                                      <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                                        <Cpu className="h-3 w-3 text-slate-500" />
-                                        {op.categoria || op.tipo_maquina}
-                                      </span>
-                                    </td>
-                                    <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
-                                      {formatHours(op.horas_estimadas)}
-                                    </td>
-                                  </tr>
-                                ))}
+                                {modelo.operacoes.map((op) => {
+                                  const isOpInstExpanded = Boolean(expandedModelOpInstructions[op.id]);
+                                  return (
+                                    <React.Fragment key={op.id}>
+                                      <tr className="hover:bg-slate-50/50">
+                                        <td className="py-2 px-3 font-mono font-bold text-slate-500">
+                                          {op.sequencia}
+                                        </td>
+                                        <td className="py-2 px-3 font-medium text-slate-900">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            <span>{op.descricao}</span>
+                                            {op.instrucoes && (
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setExpandedModelOpInstructions((prev) => ({
+                                                    ...prev,
+                                                    [op.id]: !prev[op.id],
+                                                  }))
+                                                }
+                                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200"
+                                                title="Ver instruções de fabricação"
+                                              >
+                                                <FileText className="h-3 w-3 text-slate-500" />
+                                                <span>{isOpInstExpanded ? 'Ocultar Instruções' : 'Instruções'}</span>
+                                              </button>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="py-2 px-3">
+                                          <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                                            <Cpu className="h-3 w-3 text-slate-500" />
+                                            {op.categoria || op.tipo_maquina}
+                                          </span>
+                                        </td>
+                                        <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
+                                          {formatHours(op.horas_estimadas)}
+                                        </td>
+                                      </tr>
+                                      {op.instrucoes && isOpInstExpanded && (
+                                        <tr className="bg-slate-50/80">
+                                          <td colSpan={4} className="py-2.5 px-4 pl-9">
+                                            <div className="rounded-lg border border-slate-200 bg-white p-3 font-mono text-[11px] text-slate-800 whitespace-pre-wrap shadow-2xs">
+                                              <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                                                Plano de Fabricação / Instruções Técnicas:
+                                              </span>
+                                              {op.instrucoes}
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -1199,7 +1253,7 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
               </button>
             </div>
 
-            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+            <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
               {formOperacoes.map((op, idx) => {
                 const maqMatch = maquinas.find(
                   (m) =>
@@ -1208,145 +1262,211 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
                     m.nome === op.tipo_maquina
                 );
                 const isTerceiro = maqMatch?.origem === 'terceirizado' || Boolean(op.prazo_dias);
+                const isInstOpen = Boolean(openInstructionIdx[idx] || op.instrucoes || formErrors[`op_inst_${idx}`]);
 
                 return (
                   <div
                     key={op.id}
-                    className={`flex flex-wrap sm:flex-nowrap items-center gap-2 rounded-lg border p-2 text-xs transition-colors ${
+                    className={`rounded-lg border p-2.5 text-xs transition-colors space-y-2 ${
                       isTerceiro ? 'border-purple-200 bg-purple-50/30' : 'border-slate-200 bg-slate-50'
                     }`}
                   >
-                    <input
-                      type="number"
-                      value={op.sequencia}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10) || 10;
-                        const copy = [...formOperacoes];
-                        copy[idx].sequencia = v;
-                        setFormOperacoes(copy);
-                      }}
-                      className="w-12 rounded border border-slate-300 py-1 px-1 text-center font-mono font-bold"
-                      title="Sequência"
-                    />
+                    <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                      <input
+                        type="number"
+                        value={op.sequencia}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10) || 10;
+                          const copy = [...formOperacoes];
+                          copy[idx].sequencia = v;
+                          setFormOperacoes(copy);
+                        }}
+                        className="w-12 rounded border border-slate-300 py-1 px-1 text-center font-mono font-bold"
+                        title="Sequência"
+                      />
 
-                    <input
-                      type="text"
-                      placeholder="Descrição da operação"
-                      value={op.descricao}
-                      onChange={(e) => {
-                        const copy = [...formOperacoes];
-                        copy[idx].descricao = e.target.value;
-                        setFormOperacoes(copy);
-                      }}
-                      className="flex-1 min-w-[140px] rounded border border-slate-300 py-1 px-2 text-xs"
-                    />
+                      <input
+                        type="text"
+                        placeholder="Descrição da operação"
+                        value={op.descricao}
+                        onChange={(e) => {
+                          const copy = [...formOperacoes];
+                          copy[idx].descricao = e.target.value;
+                          setFormOperacoes(copy);
+                        }}
+                        className="flex-1 min-w-[140px] rounded border border-slate-300 py-1 px-2 text-xs"
+                      />
 
-                    <select
-                      value={op.tipo_maquina}
-                      onChange={(e) => {
-                        const newTipo = e.target.value as TipoMaquina;
-                        const copy = [...formOperacoes];
-                        copy[idx].tipo_maquina = newTipo;
-                        const matched = maquinas.find(
-                          (m) => m.categoria === newTipo || m.tipo === newTipo || m.nome === newTipo
-                        );
-                        if (matched?.origem === 'terceirizado') {
-                          if (!copy[idx].prazo_dias) copy[idx].prazo_dias = matched.prazo_padrao_dias || 5;
-                          if (!copy[idx].fornecedor) copy[idx].fornecedor = matched.fornecedor_nome || '';
-                        }
-                        setFormOperacoes(copy);
-                      }}
-                      className="w-32 rounded border border-slate-300 py-1 px-1 text-xs"
-                    >
-                      {TIPOS_MAQUINA_PERMITIDOS.map((tipo) => (
-                        <option key={tipo} value={tipo}>
-                          {tipo}
-                        </option>
-                      ))}
-                    </select>
+                      <select
+                        value={op.tipo_maquina}
+                        onChange={(e) => {
+                          const newTipo = e.target.value as TipoMaquina;
+                          const copy = [...formOperacoes];
+                          copy[idx].tipo_maquina = newTipo;
+                          const matched = maquinas.find(
+                            (m) => m.categoria === newTipo || m.tipo === newTipo || m.nome === newTipo
+                          );
+                          if (matched?.origem === 'terceirizado') {
+                            if (!copy[idx].prazo_dias) copy[idx].prazo_dias = matched.prazo_padrao_dias || 5;
+                            if (!copy[idx].fornecedor) copy[idx].fornecedor = matched.fornecedor_nome || '';
+                          }
+                          setFormOperacoes(copy);
+                        }}
+                        className="w-32 rounded border border-slate-300 py-1 px-1 text-xs"
+                      >
+                        {TIPOS_MAQUINA_PERMITIDOS.map((tipo) => (
+                          <option key={tipo} value={tipo}>
+                            {tipo}
+                          </option>
+                        ))}
+                      </select>
 
-                    {isTerceiro ? (
-                      <div className="flex items-center gap-1.5">
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min="1"
-                            placeholder="Dias"
-                            value={op.prazo_dias ?? maqMatch?.prazo_padrao_dias ?? 5}
-                            onChange={(e) => {
-                              const copy = [...formOperacoes];
-                              copy[idx].prazo_dias = parseInt(e.target.value, 10) || undefined;
-                              setFormOperacoes(copy);
-                            }}
-                            className="w-14 rounded border border-purple-300 py-1 px-1 text-center font-mono font-bold text-xs bg-white"
-                            title="Prazo em dias para retorno terceirizado"
-                          />
-                          <span className="text-[10px] text-purple-700 font-semibold">dias</span>
-                        </div>
+                      {isTerceiro ? (
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="Dias"
+                              value={op.prazo_dias ?? maqMatch?.prazo_padrao_dias ?? 5}
+                              onChange={(e) => {
+                                const copy = [...formOperacoes];
+                                copy[idx].prazo_dias = parseInt(e.target.value, 10) || undefined;
+                                setFormOperacoes(copy);
+                              }}
+                              className="w-14 rounded border border-purple-300 py-1 px-1 text-center font-mono font-bold text-xs bg-white"
+                              title="Prazo em dias para retorno terceirizado"
+                            />
+                            <span className="text-[10px] text-purple-700 font-semibold">dias</span>
+                          </div>
 
-                        <input
-                          type="text"
-                          placeholder="Fornecedor padrão"
-                          value={op.fornecedor ?? ''}
-                          onChange={(e) => {
-                            const copy = [...formOperacoes];
-                            copy[idx].fornecedor = e.target.value;
-                            setFormOperacoes(copy);
-                          }}
-                          className="w-24 rounded border border-purple-200 py-1 px-1.5 text-xs bg-white text-purple-900"
-                          title="Fornecedor padrão"
-                        />
-                      </div>
-                    ) : (
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-1">
                           <input
                             type="text"
-                            inputMode="decimal"
-                            placeholder="4,0"
-                            value={op.horas_estimadas}
+                            placeholder="Fornecedor padrão"
+                            value={op.fornecedor ?? ''}
                             onChange={(e) => {
                               const copy = [...formOperacoes];
-                              copy[idx].horas_estimadas = e.target.value;
+                              copy[idx].fornecedor = e.target.value;
                               setFormOperacoes(copy);
                             }}
-                            onBlur={() => {
-                              const val = op.horas_estimadas.trim();
-                              if (val) {
-                                const num = parseFloat(val.replace(',', '.'));
-                                if (!isNaN(num) && num > 0) {
-                                  const copy = [...formOperacoes];
-                                  copy[idx].horas_estimadas = String(num).replace('.', ',');
-                                  setFormOperacoes(copy);
-                                }
-                              }
-                            }}
-                            className={`w-16 rounded border py-1 px-1.5 text-right font-mono font-bold text-xs ${
-                              formErrors[`op_hora_${idx}`] ? 'border-rose-400 bg-rose-50' : 'border-slate-300'
-                            }`}
-                            title="Tempo estimado (horas)"
+                            className="w-24 rounded border border-purple-200 py-1 px-1.5 text-xs bg-white text-purple-900"
+                            title="Fornecedor padrão"
                           />
-                          <span className="text-[10px] text-slate-500">h</span>
                         </div>
-                        {formErrors[`op_hora_${idx}`] && (
+                      ) : (
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              placeholder="4,0"
+                              value={op.horas_estimadas}
+                              onChange={(e) => {
+                                const copy = [...formOperacoes];
+                                copy[idx].horas_estimadas = e.target.value;
+                                setFormOperacoes(copy);
+                              }}
+                              onBlur={() => {
+                                const val = op.horas_estimadas.trim();
+                                if (val) {
+                                  const num = parseFloat(val.replace(',', '.'));
+                                  if (!isNaN(num) && num > 0) {
+                                    const copy = [...formOperacoes];
+                                    copy[idx].horas_estimadas = String(num).replace('.', ',');
+                                    setFormOperacoes(copy);
+                                  }
+                                }
+                              }}
+                              className={`w-16 rounded border py-1 px-1.5 text-right font-mono font-bold text-xs ${
+                                formErrors[`op_hora_${idx}`] ? 'border-rose-400 bg-rose-50' : 'border-slate-300'
+                              }`}
+                              title="Tempo estimado (horas)"
+                            />
+                            <span className="text-[10px] text-slate-500">h</span>
+                          </div>
+                          {formErrors[`op_hora_${idx}`] && (
+                            <span
+                              className="text-[10px] text-rose-600 mt-0.5 max-w-[120px] truncate"
+                              title={formErrors[`op_hora_${idx}`]}
+                            >
+                              {formErrors[`op_hora_${idx}`]}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenInstructionIdx((prev) => ({
+                            ...prev,
+                            [idx]: !prev[idx],
+                          }))
+                        }
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
+                          op.instrucoes
+                            ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                            : 'bg-white text-slate-600 border border-slate-300 hover:bg-slate-100'
+                        }`}
+                        title="Adicionar ou editar instruções de execução (Plano de Fabricação)"
+                      >
+                        <FileText className="h-3 w-3 text-slate-500" />
+                        <span>Instruções</span>
+                        {op.instrucoes && (
+                          <span className="font-mono text-[10px] text-amber-800">
+                            ({op.instrucoes.length})
+                          </span>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFormOperacao(op.id)}
+                        className="rounded p-1 text-slate-400 hover:text-rose-600 ml-auto"
+                        title="Remover etapa"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    {/* Campo de Instruções de Execução (Multilinha, até 5.000 caracteres) */}
+                    {isInstOpen && (
+                      <div className="pt-2 border-t border-slate-200/60 space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <label className="font-semibold text-slate-700 flex items-center gap-1">
+                            <FileText className="h-3.5 w-3.5 text-slate-500" />
+                            <span>Instruções de Execução (Plano de Fabricação):</span>
+                          </label>
                           <span
-                            className="text-[10px] text-rose-600 mt-0.5 max-w-[120px] truncate"
-                            title={formErrors[`op_hora_${idx}`]}
+                            className={`font-mono text-[10px] ${
+                              (op.instrucoes?.length || 0) > 5000
+                                ? 'text-rose-600 font-bold'
+                                : (op.instrucoes?.length || 0) > 4500
+                                ? 'text-amber-600 font-bold'
+                                : 'text-slate-400'
+                            }`}
                           >
-                            {formErrors[`op_hora_${idx}`]}
+                            {(op.instrucoes?.length || 0).toLocaleString('pt-BR')} / 5.000 caracteres
+                          </span>
+                        </div>
+                        <textarea
+                          rows={4}
+                          value={op.instrucoes || ''}
+                          onChange={(e) => {
+                            const copy = [...formOperacoes];
+                            copy[idx].instrucoes = e.target.value;
+                            setFormOperacoes(copy);
+                          }}
+                          placeholder={`Ex:\nLADO SUPERIOR:\n#CALÇO#\n_facear;\n_usinar contorno pronto;\n_furação de rosca e passagens pronto;`}
+                          className="w-full rounded-lg border border-slate-300 bg-white p-2.5 font-mono text-xs text-slate-900 placeholder-slate-400 focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 leading-relaxed"
+                        />
+                        {formErrors[`op_inst_${idx}`] && (
+                          <span className="text-[11px] text-rose-600 font-semibold block">
+                            {formErrors[`op_inst_${idx}`]}
                           </span>
                         )}
                       </div>
                     )}
-
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveFormOperacao(op.id)}
-                      className="rounded p-1 text-slate-400 hover:text-rose-600 ml-auto"
-                      title="Remover etapa"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
                   </div>
                 );
               })}
@@ -1372,119 +1492,16 @@ export const BibliotecaView: React.FC<BibliotecaViewProps> = ({ onRefresh }) => 
       </Modal>
 
       {/* =====================================================================
-          MODAL FOLHA DE PROCESSOS DO MODELO (VISUALIZAÇÃO / IMPRESSÃO)
+          MODAL FOLHA DE PROCESSOS DO MODELO (PLANO DE FABRICAÇÃO A4 P&B)
       ===================================================================== */}
       {folhaProcessoModelo && (
-        <Modal
+        <FolhaProcessosModal
           isOpen={Boolean(folhaProcessoModelo)}
           onClose={() => setFolhaProcessoModelo(null)}
-          title={`Folha de Processos: ${folhaProcessoModelo.codigo}`}
-          maxWidth="lg"
-        >
-          <div className="space-y-4 text-xs text-slate-800 print:p-0">
-            {/* Cabeçalho da Folha de Processos */}
-            <div className="rounded-xl border-2 border-slate-900 p-4 bg-white">
-              <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-                <div>
-                  <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">
-                    ToolShop ERP • Folha de Processos Técnica
-                  </span>
-                  <h2 className="text-base font-bold text-slate-900">
-                    {folhaProcessoModelo.nome}
-                  </h2>
-                </div>
-                <div className="text-right">
-                  <span className="block font-mono text-sm font-bold text-slate-900 bg-slate-100 px-2 py-1 rounded border border-slate-300">
-                    {folhaProcessoModelo.codigo}
-                  </span>
-                  <span className="text-[11px] text-slate-500">{folhaProcessoModelo.categoria}</span>
-                </div>
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div>
-                  <span className="text-slate-500 block text-[11px]">Material Especificado:</span>
-                  <strong className="text-slate-900">{folhaProcessoModelo.material}</strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[11px]">Quantidade Padrão:</span>
-                  <strong className="text-slate-900">1 peça</strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[11px]">Carga Total Estimada:</span>
-                  <strong className="text-amber-700 font-mono">
-                    {formatHours(
-                      folhaProcessoModelo.operacoes.reduce((acc, o) => acc + (o.horas_estimadas || 0), 0)
-                    )}
-                  </strong>
-                </div>
-              </div>
-
-              {folhaProcessoModelo.observacoes && (
-                <div className="mt-3 rounded bg-amber-50/60 p-2.5 border border-amber-200/60 text-slate-700">
-                  <span className="font-semibold block text-[11px] text-amber-900">
-                    Observações de Fabricação:
-                  </span>
-                  {folhaProcessoModelo.observacoes}
-                </div>
-              )}
-            </div>
-
-            {/* Tabela de Roteiro da Folha */}
-            <div className="overflow-hidden rounded-xl border border-slate-300">
-              <table className="w-full text-left text-xs">
-                <thead className="border-b border-slate-300 bg-slate-100 font-bold text-slate-700">
-                  <tr>
-                    <th className="py-2 px-3 w-16 text-center">Seq</th>
-                    <th className="py-2 px-3">Descrição da Operação de Usinagem</th>
-                    <th className="py-2 px-3 w-32">Centro de Custo</th>
-                    <th className="py-2 px-3 w-28 text-right">Tempo Est.</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {folhaProcessoModelo.operacoes.map((op) => (
-                    <tr key={op.id}>
-                      <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-600">
-                        {op.sequencia}
-                      </td>
-                      <td className="py-2.5 px-3 font-medium text-slate-900">{op.descricao}</td>
-                      <td className="py-2.5 px-3 font-semibold text-slate-700">
-                        {op.categoria || op.tipo_maquina}
-                        {op.fornecedor ? (
-                          <span className="block text-[10px] text-purple-700 italic font-medium">
-                            (Terceiro: {op.fornecedor})
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
-                        {op.prazo_dias ? `${op.prazo_dias}d` : formatHours(op.horas_estimadas)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex justify-between items-center pt-2">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs"
-              >
-                <Printer className="h-3.5 w-3.5 text-slate-600" />
-                <span>Imprimir Folha</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setFolhaProcessoModelo(null)}
-                className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </Modal>
+          tipo="modelo"
+          modelo={folhaProcessoModelo}
+          configEmpresa={configEmpresa}
+        />
       )}
 
       {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}

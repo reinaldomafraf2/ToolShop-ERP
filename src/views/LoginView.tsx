@@ -14,6 +14,7 @@ import {
   HardHat,
   Briefcase,
 } from 'lucide-react';
+import { SyncStatusBadge } from '../components/sync/SyncStatusBadge';
 
 export const LoginView: React.FC = () => {
   const { loginWithMatricula, loginWithEmail, loginWithGoogle } = useAuth();
@@ -92,7 +93,10 @@ export const LoginView: React.FC = () => {
   };
 
   return (
-    <div className="flex min-h-screen flex-col justify-center bg-slate-900 py-10 px-4 sm:px-6 lg:px-8">
+    <div className="relative flex min-h-screen flex-col justify-center bg-slate-900 py-10 px-4 sm:px-6 lg:px-8">
+      <div className="fixed top-4 right-4 z-30">
+        <SyncStatusBadge />
+      </div>
       {/* Container Principal Centralizado */}
       <div className="mx-auto w-full max-w-xl">
         {/* Topo / Wordmark ToolShop ERP */}

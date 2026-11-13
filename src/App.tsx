@@ -30,6 +30,9 @@ import { ConfiguracoesView } from './views/ConfiguracoesView';
 import { SemPermissaoView } from './views/SemPermissaoView';
 import { LoginView } from './views/LoginView';
 import { CriarPrimeiroAdminView } from './views/CriarPrimeiroAdminView';
+import { ComprasView } from './views/ComprasView';
+import { EstoqueView } from './views/EstoqueView';
+import { SincronizacaoView } from './views/SincronizacaoView';
 import { isExampleItem } from './data/seedData';
 import { Loader2 } from 'lucide-react';
 
@@ -65,6 +68,8 @@ function AppContent() {
       const validTabs: ViewTab[] = [
         'painel',
         'projetos',
+        'compras',
+        'estoque',
         'biblioteca',
         'centros_custo',
         'maquinas',
@@ -73,6 +78,7 @@ function AppContent() {
         'apontamento',
         'usuarios',
         'configuracoes',
+        'sincronizacao',
       ];
 
       if (hash && validTabs.includes(hash)) {
@@ -97,6 +103,8 @@ function AppContent() {
       const validTabs: ViewTab[] = [
         'painel',
         'projetos',
+        'compras',
+        'estoque',
         'biblioteca',
         'centros_custo',
         'maquinas',
@@ -105,6 +113,7 @@ function AppContent() {
         'apontamento',
         'usuarios',
         'configuracoes',
+        'sincronizacao',
       ];
 
       if (hash && validTabs.includes(hash)) {
@@ -223,6 +232,7 @@ function AppContent() {
           currentTab={currentTab}
           onToggleSidebarMobile={() => setIsSidebarOpenMobile((prev) => !prev)}
           activeShiftsCount={activeMachineIds.size}
+          onNavigateToSync={() => handleSelectTab('sincronizacao')}
         />
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
@@ -257,6 +267,14 @@ function AppContent() {
                   maquinas={maquinas}
                   onRefresh={loadData}
                 />
+              )}
+
+              {currentTab === 'compras' && (
+                <ComprasView />
+              )}
+
+              {currentTab === 'estoque' && (
+                <EstoqueView />
               )}
 
               {currentTab === 'biblioteca' && (
@@ -308,6 +326,10 @@ function AppContent() {
                   onNavigateToOperadores={() => handleSelectTab('operadores')}
                   onRefresh={loadData}
                 />
+              )}
+
+              {currentTab === 'sincronizacao' && (
+                <SincronizacaoView />
               )}
             </>
 
