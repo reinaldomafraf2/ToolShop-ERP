@@ -1,3 +1,5 @@
+import { APP_TIME_ZONE, parseDateTimeToMs } from './calendarioTrabalho';
+
 /**
  * Formata valores numéricos para Moeda Brasileira (BRL)
  */
@@ -11,30 +13,37 @@ export function formatCurrencyBRL(value: number): string {
 }
 
 /**
- * Formata data ISO (YYYY-MM-DD ou ISO string) para formato brasileiro DD/MM/AAAA
+ * Formata data ISO (YYYY-MM-DD ou ISO string) para formato brasileiro DD/MM/AAAA no fuso America/Sao_Paulo.
+ * Datas puras YYYY-MM-DD são formatadas diretamente sem conversão de fuso (nunca tratadas como meia-noite UTC).
  */
 export function formatDateBR(dateString: string): string {
   if (!dateString) return '-';
   try {
-    const parts = dateString.split('T')[0].split('-');
-    if (parts.length === 3) {
-      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    const trimmed = dateString.trim();
+    const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+    if (dateOnlyMatch) {
+      return `${dateOnlyMatch[3]}/${dateOnlyMatch[2]}/${dateOnlyMatch[1]}`;
     }
-    const d = new Date(dateString);
-    return d.toLocaleDateString('pt-BR');
+    const ms = parseDateTimeToMs(trimmed);
+    if (!Number.isFinite(ms)) return dateString;
+    return new Date(ms).toLocaleDateString('pt-BR', {
+      timeZone: APP_TIME_ZONE,
+    });
   } catch {
     return dateString;
   }
 }
 
 /**
- * Formata data e hora para DD/MM/AAAA HH:mm
+ * Formata data e hora para DD/MM/AAAA HH:mm em America/Sao_Paulo.
  */
 export function formatDateTimeBR(dateString: string | null): string {
   if (!dateString) return 'Em andamento';
   try {
-    const d = new Date(dateString);
-    return d.toLocaleDateString('pt-BR', {
+    const ms = parseDateTimeToMs(dateString);
+    if (!Number.isFinite(ms)) return dateString;
+    return new Date(ms).toLocaleDateString('pt-BR', {
+      timeZone: APP_TIME_ZONE,
       day: '2-digit',
       month: '2-digit',
       year: 'numeric',
@@ -52,10 +61,11 @@ export function formatDateTimeBR(dateString: string | null): string {
  */
 export function calculateDurationHours(inicio: string, fim: string | null): number {
   if (!inicio) return 0;
-  const start = new Date(inicio).getTime();
-  const end = fim ? new Date(fim).getTime() : Date.now();
+  const start = parseDateTimeToMs(inicio);
+  const end = fim ? parseDateTimeToMs(fim) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
   const diffMs = Math.max(0, end - start);
-  return diffMs / (1000 * 60 * 60);
+  return diffMs / 3_600_000;
 }
 
 /**

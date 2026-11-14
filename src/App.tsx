@@ -12,6 +12,7 @@ import {
   Operador,
   Cliente,
   ApontamentoComOperador,
+  ConfiguracoesSistema,
 } from './types';
 import { toolShopService } from './services/toolShopService';
 import { AuthProvider, useAuth } from './auth/AuthContext';
@@ -59,6 +60,7 @@ function AppContent() {
   const [operadores, setOperadores] = useState<Operador[]>([]);
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [apontamentos, setApontamentos] = useState<ApontamentoComOperador[]>([]);
+  const [configuracoes, setConfiguracoes] = useState<ConfiguracoesSistema | null>(null);
 
   // Sincroniza tab padrão do perfil ao autenticar (Operador cai direto em Apontamento)
   useEffect(() => {
@@ -142,12 +144,13 @@ function AppContent() {
 
   const loadData = useCallback(async () => {
     try {
-      const [projList, maqList, opList, cliList, aptList] = await Promise.all([
+      const [projList, maqList, opList, cliList, aptList, cfg] = await Promise.all([
         toolShopService.getProjetosComDetalhes(),
         toolShopService.getCentrosCusto(),
         toolShopService.getOperadores(),
         toolShopService.getClientes(),
         toolShopService.getApontamentos(),
+        toolShopService.getConfiguracoes().catch(() => null),
       ]);
 
       setProjetos(projList.filter((p) => !isExampleItem(p)));
@@ -155,6 +158,7 @@ function AppContent() {
       setOperadores(opList.filter((o) => !isExampleItem(o)));
       setClientes(cliList.filter((c) => !isExampleItem(c)));
       setApontamentos(aptList.filter((a) => !isExampleItem(a)));
+      if (cfg) setConfiguracoes(cfg);
     } catch (error) {
       console.error('Erro ao carregar dados da ferramentaria:', error);
     } finally {
@@ -255,6 +259,7 @@ function AppContent() {
                   totalMaquinas={maquinas.length}
                   totalOperadores={operadores.length}
                   apontamentos={apontamentos}
+                  configuracoes={configuracoes}
                   onNavigateTab={handleSelectTab}
                   onRefresh={loadData}
                 />
@@ -265,6 +270,7 @@ function AppContent() {
                   projetos={projetos}
                   clientes={clientes}
                   maquinas={maquinas}
+                  configuracoes={configuracoes}
                   onRefresh={loadData}
                 />
               )}

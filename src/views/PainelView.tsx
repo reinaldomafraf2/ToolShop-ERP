@@ -4,6 +4,7 @@ import {
   ApontamentoComOperador,
   Maquina,
   ViewTab,
+  ConfiguracoesSistema,
 } from '../types';
 import {
   FolderKanban,
@@ -27,6 +28,11 @@ import {
 } from 'lucide-react';
 import { comprasService } from '../services/comprasService';
 import { estoqueService } from '../services/estoqueService';
+import { toolShopService } from '../services/toolShopService';
+import { isProjetoAtrasado, navigateToProjetoDetalhe } from '../services/prazoProjetoService';
+import { getLocalDateKey } from '../utils/calendarioTrabalho';
+import { PainelPrazosCards } from '../components/painel/PainelPrazosCards';
+import { useAuth } from '../auth/AuthContext';
 import {
   BarChart,
   Bar,
@@ -46,13 +52,16 @@ interface PainelViewProps {
   totalMaquinas: number;
   totalOperadores: number;
   apontamentos: ApontamentoComOperador[];
+  configuracoes?: ConfiguracoesSistema | null;
   onNavigateTab: (tab: ViewTab) => void;
   onRefresh?: () => void;
 }
 
 function calculateDiffDays(targetDateStr: string): number {
   if (!targetDateStr) return 0;
-  const target = new Date(targetDateStr + 'T00:00:00');
+  const clean = targetDateStr.split('T')[0];
+  const target = new Date(clean + 'T00:00:00');
+  if (isNaN(target.getTime())) return 0;
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const diffMs = target.getTime() - today.getTime();
@@ -71,8 +80,27 @@ export const PainelView: React.FC<PainelViewProps> = ({
   projetos,
   maquinas,
   apontamentos,
+  configuracoes,
   onNavigateTab,
 }) => {
+  const { perfil } = useAuth();
+  const canViewPrazo = Boolean(perfil && perfil !== 'operador');
+
+  const [configLocal, setConfigLocal] = useState<ConfiguracoesSistema | null>(
+    configuracoes ?? null
+  );
+
+  useEffect(() => {
+    if (configuracoes) {
+      setConfigLocal(configuracoes);
+    } else {
+      toolShopService
+        .getConfiguracoes()
+        .then(setConfigLocal)
+        .catch(() => null);
+    }
+  }, [configuracoes]);
+
   // Live ticker para cronômetros de turnos em andamento (atualiza a cada 1s sem recarregar a página)
   const [currentTimestamp, setCurrentTimestamp] = useState<number>(Date.now());
 
@@ -119,7 +147,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
       );
   }, [projetos]);
 
-  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const todayStr = useMemo(() => getLocalDateKey(currentTimestamp), [currentTimestamp]);
   const currentMonthPrefix = useMemo(() => {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -134,16 +162,10 @@ export const PainelView: React.FC<PainelViewProps> = ({
     );
   }, [projetos]);
 
-  // Projetos atrasados (prazo < hoje e status não concluído nem cancelado)
+  // Projetos atrasados (data_entrega < agora e status não concluído nem cancelado)
   const projetosAtrasados = useMemo(() => {
-    return projetos.filter(
-      (p) =>
-        p.prazo &&
-        p.prazo < todayStr &&
-        p.status !== 'Concluído' &&
-        p.status !== 'Cancelado'
-    );
-  }, [projetos, todayStr]);
+    return projetos.filter((p) => isProjetoAtrasado(p, configLocal, currentTimestamp));
+  }, [projetos, configLocal, currentTimestamp]);
 
   // Operações em andamento agora (apontamentos ativos no chão de fábrica)
   const apontamentosAtivos = useMemo(() => {
@@ -455,6 +477,18 @@ export const PainelView: React.FC<PainelViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ========================================================================= */}
+      {/* 1.0B CARDS DE PRAZO E TEMPO HÁBIL (Líder, Gerente e Admin)                */}
+      {/* ========================================================================= */}
+      {canViewPrazo && (
+        <PainelPrazosCards
+          projetos={projetos}
+          centrosCusto={maquinas}
+          configuracoes={configLocal}
+          nowMs={currentTimestamp}
+        />
+      )}
 
       {/* ========================================================================= */}
       {/* 1.1 CARDS DE ESTOQUE E ALMOXARIFADO                                       */}
@@ -1363,7 +1397,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
               ) : (
                 proximasEntregas.map((proj) => {
                   const diffDays = calculateDiffDays(proj.prazo);
-                  const isOverdue = diffDays < 0;
+                  const isOverdue = isProjetoAtrasado(proj, configLocal, currentTimestamp);
                   const percent =
                     proj.totalOperacoes > 0
                       ? Math.round(
@@ -1405,7 +1439,11 @@ export const PainelView: React.FC<PainelViewProps> = ({
                         {isOverdue ? (
                           <span className="inline-flex items-center gap-1 rounded bg-rose-100 px-2 py-0.5 text-[11px] font-bold text-rose-800">
                             <AlertCircle className="h-3 w-3" />
-                            <span>Venceu há {Math.abs(diffDays)} dias</span>
+                            <span>
+                              {diffDays < 0
+                                ? `Venceu há ${Math.abs(diffDays)} dias`
+                                : 'Prazo vencido hoje'}
+                            </span>
                           </span>
                         ) : diffDays === 0 ? (
                           <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-900">
@@ -1449,7 +1487,7 @@ export const PainelView: React.FC<PainelViewProps> = ({
                       <td className="py-3.5 px-4 text-right">
                         <button
                           type="button"
-                          onClick={() => onNavigateTab('projetos')}
+                          onClick={() => navigateToProjetoDetalhe(proj.id)}
                           className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
                         >
                           <span>Acessar</span>

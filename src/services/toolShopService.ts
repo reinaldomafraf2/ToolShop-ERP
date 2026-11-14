@@ -62,6 +62,16 @@ import {
   executeCascadeDeleteProjeto,
   executeCascadeDeleteComponente,
 } from '../repositories/cascadeDelete';
+import {
+  recomputeAndPersistProjetoAggregates,
+  transactionalAjustarApontamento,
+  transactionalCreateOperacao,
+  transactionalDeleteApontamento,
+  transactionalDeleteOperacao,
+  transactionalFinalizarApontamento,
+  transactionalUpdateOperacao,
+} from '../repositories/projetoAggregates';
+import { recalcularCamposPrazoProjeto } from './prazoProjetoService';
 import { isExampleItem } from '../data/seedData';
 import { calculateDurationHours } from '../utils/formatters';
 import { DEFAULT_EMPRESA_ID } from '../utils/uuid';
@@ -164,6 +174,21 @@ export class ToolShopService {
       fornecedor_nome: origem === 'terceirizado' ? data.fornecedor_nome?.trim() : undefined,
       fornecedor_contato: origem === 'terceirizado' ? data.fornecedor_contato?.trim() : undefined,
       prazo_padrao_dias: origem === 'terceirizado' && data.prazo_padrao_dias ? Number(data.prazo_padrao_dias) : undefined,
+      capacidade_paralela:
+        origem === 'interno'
+          ? Math.max(1, Number(data.capacidade_paralela || 1))
+          : undefined,
+      horas_por_dia:
+        origem === 'interno' && data.horas_por_dia !== undefined && data.horas_por_dia > 0
+          ? Number(data.horas_por_dia)
+          : undefined,
+      disponibilidade_percentual:
+        origem === 'interno' &&
+        data.disponibilidade_percentual !== undefined &&
+        data.disponibilidade_percentual >= 0 &&
+        data.disponibilidade_percentual <= 100
+          ? Number(data.disponibilidade_percentual)
+          : undefined,
       ativo: data.ativo !== false,
       observacoes: data.observacoes?.trim() || undefined,
     });
@@ -189,6 +214,13 @@ export class ToolShopService {
       cleanUpdates.fornecedor_nome = undefined;
       cleanUpdates.fornecedor_contato = undefined;
       cleanUpdates.prazo_padrao_dias = undefined;
+      if (cleanUpdates.capacidade_paralela !== undefined) {
+        cleanUpdates.capacidade_paralela = Math.max(1, Number(cleanUpdates.capacidade_paralela || 1));
+      }
+    } else if (cleanUpdates.origem === 'terceirizado') {
+      cleanUpdates.capacidade_paralela = undefined;
+      cleanUpdates.horas_por_dia = undefined;
+      cleanUpdates.disponibilidade_percentual = undefined;
     }
     return this.centrosCustoRepo.update(id, cleanUpdates);
   }
@@ -500,6 +532,16 @@ export class ToolShopService {
     return this.projetosRepo.getAll(empresaId);
   }
 
+  /**
+   * Lê exclusivamente documentos da coleção de projetos ativos (sem ler operações ou apontamentos).
+   */
+  async getProjetosAtivos(empresaId: string = DEFAULT_EMPRESA_ID): Promise<Projeto[]> {
+    const projetos = await this.projetosRepo.getAll(empresaId);
+    return projetos.filter(
+      (p) => !isExampleItem(p) && p.status !== 'Concluído' && p.status !== 'Cancelado'
+    );
+  }
+
   async getProjetosComDetalhes(empresaId: string = DEFAULT_EMPRESA_ID): Promise<ProjetoComDetalhes[]> {
     const movRepo = new FirestoreMovimentoEstoqueRepository();
     const resRepo = new FirestoreReservaEstoqueRepository();
@@ -612,6 +654,8 @@ export class ToolShopService {
       let operacoesConcluidasCount = 0;
       let horasEstimadasTotal = 0;
       let horasApontadasTotal = 0;
+      let horasAExecutarFallback = 0;
+      const horasAExecutarPorCcFallback: Record<string, number> = {};
       let custoInterno = 0;
       let custoTerceiros = 0;
       let custoTerceirosEstimado = 0;
@@ -640,9 +684,20 @@ export class ToolShopService {
               custoTerceiros += orcado;
             }
           } else {
-            horasEstimadasTotal += op.horas_estimadas || 0;
-            horasApontadasTotal += op.horasApontadas || 0;
+            const estOp = op.horas_estimadas || 0;
+            const aptOp = op.horasApontadas || 0;
+            horasEstimadasTotal += estOp;
+            horasApontadasTotal += aptOp;
             custoInterno += op.custoAcumulado || 0;
+            if (op.status !== 'Concluída' && op.status !== 'Retornada') {
+              const restOp = Math.max(estOp - aptOp, 0);
+              const ccId = op.centro_custo_id || op.maquina_id || '';
+              if (restOp > 0 && ccId) {
+                horasAExecutarFallback += restOp;
+                horasAExecutarPorCcFallback[ccId] =
+                  (horasAExecutarPorCcFallback[ccId] || 0) + restOp;
+              }
+            }
           }
         });
       });
@@ -651,6 +706,10 @@ export class ToolShopService {
 
       return {
         ...proj,
+        horas_consumidas: Math.round(horasApontadasTotal * 10000) / 10000,
+        horas_estimadas_total: Math.round(horasEstimadasTotal * 10000) / 10000,
+        horas_a_executar: Math.round(horasAExecutarFallback * 10000) / 10000,
+        horas_a_executar_por_cc: horasAExecutarPorCcFallback,
         cliente: clienteMap.get(proj.cliente_id),
         componentes: componentesComOperacoes,
         totalComponentes: projComponentes.length,
@@ -683,10 +742,44 @@ export class ToolShopService {
     if (!data.cliente_id) {
       throw new Error('Selecione um cliente para o projeto.');
     }
-    if (!data.prazo) {
+    if (!data.prazo && !data.data_entrega && data.prazo_horas === undefined) {
       throw new Error('O prazo de entrega é obrigatório.');
     }
-    return this.projetosRepo.create(data);
+
+    const cfg = await this.getConfiguracoes();
+    const agora = new Date().toISOString();
+    const camposPrazo = recalcularCamposPrazoProjeto(
+      {
+        data_inicio: data.data_inicio || undefined,
+        referencia_inicio: agora,
+        data_entrega: data.data_entrega,
+        prazo: data.prazo,
+        prazo_horas: data.prazo_horas,
+        prazo_origem: data.prazo_origem || (data.prazo_horas !== undefined && !data.data_entrega ? 'horas' : 'data'),
+      },
+      cfg
+    );
+
+    const payload: Omit<Projeto, 'id' | 'empresa_id'> = {
+      ...data,
+      data_entrega: camposPrazo.data_entrega,
+      prazo: camposPrazo.prazo,
+      prazo_horas: camposPrazo.prazo_horas,
+      prazo_origem: camposPrazo.prazo_origem,
+      criado_em: data.criado_em || agora,
+      atualizado_em: agora,
+      horas_consumidas: 0,
+      horas_estimadas_total: 0,
+      horas_a_executar: 0,
+      horas_a_executar_por_cc: {},
+    };
+    if (camposPrazo.data_inicio) {
+      payload.data_inicio = camposPrazo.data_inicio;
+    } else {
+      delete payload.data_inicio;
+    }
+
+    return this.projetosRepo.create(payload);
   }
 
   async updateProjeto(id: string, updates: Partial<Projeto>): Promise<Projeto> {
@@ -696,7 +789,79 @@ export class ToolShopService {
     if (updates.descricao !== undefined && !updates.descricao.trim()) {
       throw new Error('A descrição do projeto é obrigatória.');
     }
-    return this.projetosRepo.update(id, updates);
+
+    const cleanUpdates: Partial<Projeto> = {
+      ...updates,
+      atualizado_em: new Date().toISOString(),
+    };
+
+    if (
+      updates.data_inicio !== undefined ||
+      updates.data_entrega !== undefined ||
+      updates.prazo !== undefined ||
+      updates.prazo_horas !== undefined ||
+      updates.prazo_origem !== undefined
+    ) {
+      const [existing, cfg] = await Promise.all([
+        this.projetosRepo.getById(id),
+        this.getConfiguracoes(),
+      ]);
+      const dataInicioParam =
+        updates.data_inicio !== undefined
+          ? updates.data_inicio || undefined
+          : existing?.data_inicio || undefined;
+      const camposPrazo = recalcularCamposPrazoProjeto(
+        {
+          data_inicio: dataInicioParam,
+          referencia_inicio: new Date().toISOString(),
+          data_entrega: updates.data_entrega ?? existing?.data_entrega,
+          prazo: updates.prazo ?? existing?.prazo,
+          prazo_horas: updates.prazo_horas ?? existing?.prazo_horas,
+          prazo_origem: updates.prazo_origem ?? existing?.prazo_origem ?? 'data',
+        },
+        cfg
+      );
+      cleanUpdates.data_entrega = camposPrazo.data_entrega;
+      cleanUpdates.prazo = camposPrazo.prazo;
+      cleanUpdates.prazo_horas = camposPrazo.prazo_horas;
+      cleanUpdates.prazo_origem = camposPrazo.prazo_origem;
+      if (camposPrazo.data_inicio) {
+        cleanUpdates.data_inicio = camposPrazo.data_inicio;
+      } else if (updates.data_inicio === '' || updates.data_inicio === null) {
+        cleanUpdates.data_inicio = undefined;
+      } else {
+        delete cleanUpdates.data_inicio;
+      }
+    }
+
+    return this.projetosRepo.update(id, cleanUpdates);
+  }
+
+  async iniciarProducaoProjeto(id: string): Promise<Projeto> {
+    const existing = await this.projetosRepo.getById(id);
+    if (!existing) {
+      throw new Error('Projeto não encontrado.');
+    }
+    const cfg = await this.getConfiguracoes();
+    const agora = new Date().toISOString();
+    const camposPrazo = recalcularCamposPrazoProjeto(
+      {
+        data_inicio: agora,
+        data_entrega: existing.data_entrega,
+        prazo: existing.prazo,
+        prazo_horas: existing.prazo_horas,
+        prazo_origem: existing.prazo_origem || 'data',
+      },
+      cfg
+    );
+    return this.projetosRepo.update(id, {
+      data_inicio: camposPrazo.data_inicio || agora,
+      data_entrega: camposPrazo.data_entrega,
+      prazo: camposPrazo.prazo,
+      prazo_horas: camposPrazo.prazo_horas,
+      prazo_origem: camposPrazo.prazo_origem,
+      atualizado_em: agora,
+    });
   }
 
   async deleteProjeto(id: string): Promise<boolean> {
@@ -757,7 +922,7 @@ export class ToolShopService {
       instrucoes = instrucoes.substring(0, 5000);
     }
 
-    return this.operacoesRepo.create({
+    return transactionalCreateOperacao({
       ...data,
       instrucoes,
       centro_custo_id: centroCustoId,
@@ -782,15 +947,11 @@ export class ToolShopService {
     if (cleanUpdates.maquina_id && !cleanUpdates.centro_custo_id) {
       cleanUpdates.centro_custo_id = cleanUpdates.maquina_id;
     }
-    return this.operacoesRepo.update(id, cleanUpdates);
+    return transactionalUpdateOperacao(id, cleanUpdates);
   }
 
   async deleteOperacao(id: string): Promise<boolean> {
-    const apontamentos = await this.apontamentosRepo.getByOperacaoId(id);
-    for (const apt of apontamentos) {
-      await this.apontamentosRepo.delete(apt.id);
-    }
-    return this.operacoesRepo.delete(id);
+    return transactionalDeleteOperacao(id);
   }
 
   async reorderOperacoes(componenteId: string, operacaoIdsInOrder: string[]): Promise<Operacao[]> {
@@ -805,7 +966,7 @@ export class ToolShopService {
   }
 
   async updateOperacaoStatus(id: string, status: Operacao['status']): Promise<Operacao> {
-    return this.operacoesRepo.update(id, { status });
+    return transactionalUpdateOperacao(id, { status }, status === 'Concluída' || status === 'Retornada');
   }
 
   // --- APONTAMENTOS ---
@@ -969,31 +1130,7 @@ export class ToolShopService {
     apontamentoId: string,
     concluirOperacao: boolean = false
   ): Promise<Apontamento> {
-    const apt = await this.apontamentosRepo.getById(apontamentoId);
-    if (!apt) throw new Error('Apontamento não encontrado.');
-
-    const updatedApt = await this.apontamentosRepo.update(apontamentoId, {
-      fim: new Date().toISOString(),
-    });
-
-    if (concluirOperacao && apt.operacao_id) {
-      // Atualiza status da operação para 'Concluída'
-      const op = await this.operacoesRepo.update(apt.operacao_id, { status: 'Concluída' });
-
-      // Regra: Quando todas as operações de um componente estiverem concluídas, marque o componente como Concluído automaticamente.
-      if (op.componente_id) {
-        const operacoesComp = await this.operacoesRepo.getByComponenteId(op.componente_id);
-        const todasConcluidas =
-          operacoesComp.length > 0 &&
-          operacoesComp.every((o) => o.status === 'Concluída' || o.status === 'Retornada');
-
-        if (todasConcluidas) {
-          await this.componentesRepo.update(op.componente_id, { status: 'Concluído' });
-        }
-      }
-    }
-
-    return updatedApt;
+    return transactionalFinalizarApontamento(apontamentoId, concluirOperacao);
   }
 
   // --- CONTROLE DE OPERAÇÕES TERCEIRIZADAS (ENVIO E RETORNO) ---
@@ -1084,12 +1221,11 @@ export class ToolShopService {
       throw new Error('Informe o motivo ou justificativa do ajuste manual.');
     }
 
-    return this.apontamentosRepo.update(id, {
-      inicio,
-      fim,
-      editado_manualmente: true,
-      motivo_edicao: motivo.trim(),
-    });
+    return transactionalAjustarApontamento(id, inicio, fim, motivo);
+  }
+
+  async deleteApontamento(id: string): Promise<boolean> {
+    return transactionalDeleteApontamento(id);
   }
 
   async getOperacoesDisponiveis(
@@ -1454,6 +1590,10 @@ export class ToolShopService {
       data_hora: new Date().toISOString(),
       detalhes: `Importados ${itens.length} componente(s) e ${totalOperacoesCriadas} operação(ões) para o projeto.`,
     });
+
+    if (totalOperacoesCriadas > 0) {
+      await recomputeAndPersistProjetoAggregates(projetoId);
+    }
 
     return {
       totalImportados: componentesCriados.length,

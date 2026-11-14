@@ -1,6 +1,7 @@
 import { collection, doc, getDocs, writeBatch, deleteField } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
 import { syncStatusService } from '../services/syncStatusService';
+import { recomputeAndPersistProjetoAggregates } from './projetoAggregates';
 import {
   Componente,
   Operacao,
@@ -279,7 +280,11 @@ export async function executeCascadeDeleteProjeto(projetoId: string): Promise<bo
  * - Libera unidades físicas reservadas e limpa referências ao componente excluído
  */
 export async function executeCascadeDeleteComponente(componenteId: string): Promise<boolean> {
-  const [opData, aptData, comprasData, reservasData, unidadesData] = await Promise.all([
+  const [compData, opData, aptData, comprasData, reservasData, unidadesData] = await Promise.all([
+    loadMergedCollection<Componente>('componentes', [
+      'toolshop_componentes_v1',
+      'toolshop_componentes',
+    ]),
     loadMergedCollection<Operacao>('operacoes', ['toolshop_operacoes_v1', 'toolshop_operacoes']),
     loadMergedCollection<Apontamento>('apontamentos', [
       'toolshop_apontamentos_v1',
@@ -289,6 +294,9 @@ export async function executeCascadeDeleteComponente(componenteId: string): Prom
     loadMergedCollection<ReservaEstoque>('reservas_estoque', ['toolshop_reservas_estoque']),
     loadMergedCollection<UnidadeEstoque>('unidades_estoque', ['toolshop_unidades_estoque']),
   ]);
+
+  const targetComp = compData.merged.find((c) => c.id === componenteId);
+  const parentProjetoId = targetComp?.projeto_id;
 
   const opIds = new Set(
     opData.merged.filter((op) => op.componente_id === componenteId).map((op) => op.id)
@@ -364,6 +372,10 @@ export async function executeCascadeDeleteComponente(componenteId: string): Prom
   writeLocalFiltered(['toolshop_itens_compra'], itemCompraIds);
   writeLocalFiltered(['toolshop_reservas_estoque'], reservaIds);
   writeLocalFiltered(['toolshop_componentes_v1', 'toolshop_componentes'], new Set([componenteId]));
+
+  if (parentProjetoId) {
+    await recomputeAndPersistProjetoAggregates(parentProjetoId);
+  }
 
   return true;
 }

@@ -29,6 +29,10 @@ export interface CentroCusto {
   fornecedor_nome?: string;
   fornecedor_contato?: string;
   prazo_padrao_dias?: number; // Usado só em terceirizado
+  // Capacidade (apenas centros internos)
+  capacidade_paralela?: number; // Número de máquinas ou pessoas equivalentes (padrão 1)
+  horas_por_dia?: number; // Opcional; padrão = horas de expediente por dia
+  disponibilidade_percentual?: number; // Opcional; padrão da configuração (85%)
   ativo: boolean;
   observacoes?: string;
 
@@ -59,6 +63,8 @@ export interface Operador {
   nome: string;
 }
 
+export type PrazoOrigem = 'horas' | 'data';
+
 export interface Projeto {
   id: string; // UUID
   empresa_id: string; // UUID
@@ -67,7 +73,18 @@ export interface Projeto {
   orcamento_codigo?: string; // Código do orçamento (texto)
   planejador?: string; // Planejador responsável (texto)
   descricao: string;
-  prazo: string; // YYYY-MM-DD
+  prazo: string; // YYYY-MM-DD (mantido em sincronia com data_entrega para compatibilidade)
+  data_inicio?: string; // ISO datetime (padrão = momento da criação)
+  data_entrega?: string; // ISO datetime (padrão = fim do expediente do dia escolhido)
+  prazo_horas?: number; // Janela de calendário entre data_inicio e data_entrega (conforme contagem_prazo)
+  prazo_origem?: PrazoOrigem; // 'horas' | 'data'
+  // Agregados mantidos transacionalmente no documento do projeto (apenas operações internas)
+  horas_consumidas?: number;
+  horas_estimadas_total?: number;
+  horas_a_executar?: number;
+  horas_a_executar_por_cc?: Record<string, number>;
+  criado_em?: string;
+  atualizado_em?: string;
   status: StatusProjeto;
 }
 
@@ -265,6 +282,13 @@ export interface OperadorCentroCusto {
   atualizado_em?: string; // ISO string
 }
 
+export type ContagemPrazo = 'corridas' | 'expediente';
+
+export interface FeriadoCalendario {
+  data: string; // YYYY-MM-DD
+  nome: string;
+}
+
 export interface ConfiguracoesSistema {
   id: string; // UUID ou 'config_padrao'
   empresa_id: string;
@@ -286,6 +310,16 @@ export interface ConfiguracoesSistema {
   // Configurações de Estoque
   permitir_saldo_negativo?: boolean; // Padrão: false (Permitir saída ou reserva acima do saldo disponível)
   dias_alerta_reserva_parada?: number; // Padrão: 30 (Alerta de reservas ativas paradas há mais de N dias)
+
+  // Configurações de Calendário de Trabalho e Prazos
+  contagem_prazo?: ContagemPrazo; // 'corridas' (padrão) | 'expediente'
+  expediente_dias_semana?: number[]; // 0=Dom..6=Sáb (padrão: [1,2,3,4,5])
+  expediente_inicio?: string; // HH:mm (padrão: '08:00')
+  expediente_fim?: string; // HH:mm (padrão: '17:00')
+  expediente_almoco_horas?: number; // horas de intervalo (padrão: 1)
+  feriados?: FeriadoCalendario[]; // Lista de feriados
+  atencao_percentual?: number; // Padrão: 15 (%)
+  disponibilidade_percentual_padrao?: number; // Padrão: 85 (%)
 
   atualizado_por?: string;
   atualizado_em?: string;

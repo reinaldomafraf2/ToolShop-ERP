@@ -17,13 +17,22 @@ import {
   ItemCompra,
   StatusItemCompra,
   ItemEstoqueComDetalhes,
+  PrazoOrigem,
 } from '../types';
 import { toolShopService } from '../services/toolShopService';
 import { comprasService } from '../services/comprasService';
 import { estoqueService } from '../services/estoqueService';
+import {
+  avaliarPrazoProjeto,
+  consumeFocusProjetoId,
+  isProjetoAtrasado,
+  recalcularCamposPrazoProjeto,
+} from '../services/prazoProjetoService';
 import { ProjetoComprasTab } from '../components/compras/ProjetoComprasTab';
 import { RetirarMaterialModal } from '../components/projetos/RetirarMaterialModal';
 import { ComponenteMaterialBadge } from '../components/projetos/ComponenteMaterialBadge';
+import { PrazoProjetoCard, PrazoListaCelula } from '../components/projetos/PrazoProjetoCard';
+import { ProjetoPrazoModalFields } from '../components/projetos/ProjetoPrazoModalFields';
 import { RegistrarSobraModal } from '../components/estoque/RegistrarSobraModal';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDeleteModal } from '../components/common/ConfirmDeleteModal';
@@ -88,6 +97,7 @@ interface ProjetosViewProps {
   projetos: ProjetoComDetalhes[];
   clientes: Cliente[];
   maquinas: Maquina[];
+  configuracoes?: ConfiguracoesSistema | null;
   onRefresh: () => void;
 }
 
@@ -115,6 +125,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   projetos,
   clientes,
   maquinas,
+  configuracoes,
   onRefresh,
 }) => {
   const { user, perfil, can } = useAuth();
@@ -124,6 +135,8 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   const canViewCustos = can('ver', 'custos');
   const canImport = can('importar', 'projetos');
   const canManageTerceiros = user?.perfil === 'admin' || user?.perfil === 'gerente' || user?.perfil === 'lider';
+  const canViewPrazo = Boolean(perfil && perfil !== 'operador');
+  const canEditPrazo = perfil === 'gerente' || perfil === 'admin';
 
   // Biblioteca de modelos para reconhecimento e auto-preenchimento
   const [modelosBiblioteca, setModelosBiblioteca] = useState<ModeloComponente[]>([]);
@@ -134,6 +147,22 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
 
   // Navegação: null = lista de projetos, string = ID do projeto em detalhe
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const focusId = consumeFocusProjetoId();
+    if (focusId) {
+      setSelectedProjectId(focusId);
+    }
+    const handleFocus = (ev: Event) => {
+      const id = (ev as CustomEvent<{ projetoId?: string }>).detail?.projetoId;
+      if (id) {
+        consumeFocusProjetoId();
+        setSelectedProjectId(id);
+      }
+    };
+    window.addEventListener('toolshop:focus-projeto', handleFocus);
+    return () => window.removeEventListener('toolshop:focus-projeto', handleFocus);
+  }, []);
 
   // Aba ativa dentro do projeto selecionado: 'componentes' | 'compras'
   const [abaProjeto, setAbaProjeto] = useState<'componentes' | 'compras'>('componentes');
@@ -188,17 +217,32 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'Todos' | StatusProjeto>('Todos');
   const [clienteFilter, setClienteFilter] = useState<string>('Todos');
+  const [prazoFilter, setPrazoFilter] = useState<
+    'Todos' | 'Atrasados' | 'Apertados' | 'Sem tempo hábil'
+  >('Todos');
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Componentes expandidos no Detalhe do Projeto (map de componenteId -> boolean)
   const [expandedComponents, setExpandedComponents] = useState<Record<string, boolean>>({});
 
-  // --- CONFIGURAÇÃO DA EMPRESA (FOLHA DE PROCESSOS) ---
-  const [configEmpresa, setConfigEmpresa] = useState<ConfiguracoesSistema | null>(null);
+  // --- CONFIGURAÇÃO DA EMPRESA (FOLHA DE PROCESSOS E CALENDÁRIO) ---
+  const [configEmpresa, setConfigEmpresa] = useState<ConfiguracoesSistema | null>(
+    configuracoes ?? null
+  );
 
   useEffect(() => {
-    toolShopService.getConfiguracoes().then(setConfigEmpresa).catch(console.warn);
-  }, []);
+    if (configuracoes) {
+      setConfigEmpresa(configuracoes);
+    } else {
+      toolShopService.getConfiguracoes().then(setConfigEmpresa).catch(console.warn);
+    }
+  }, [configuracoes]);
 
   // --- MODAIS DE PROJETO ---
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
@@ -210,9 +254,14 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     cliente_id: '',
     descricao: '',
     prazo: '',
+    data_inicio: '',
+    data_entrega: '',
+    prazo_horas: '',
+    prazo_origem: 'data' as PrazoOrigem,
     status: 'Aguardando' as StatusProjeto,
   });
   const [projectErrors, setProjectErrors] = useState<{ [key: string]: string }>({});
+  const [iniciandoProducao, setIniciandoProducao] = useState(false);
 
   // --- MODAIS DE COMPONENTE ---
   const [isComponentModalOpen, setIsComponentModalOpen] = useState(false);
@@ -315,14 +364,11 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Data atual de referência para cálculo de atraso
-  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
-
-  const isProjectOverdue = (prazo: string, status: StatusProjeto) => {
-    if (!prazo) return false;
-    if (status === 'Concluído' || status === 'Cancelado') return false;
-    return prazo < todayStr;
-  };
+  const isProjectOverdue = (proj: {
+    prazo?: string;
+    data_entrega?: string;
+    status: StatusProjeto;
+  }) => isProjetoAtrasado(proj, configEmpresa, nowMs);
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
     setFeedback({ type, message });
@@ -344,9 +390,28 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
         (proj.cliente?.nome && proj.cliente.nome.toLowerCase().includes(searchTerm.toLowerCase()));
       const matchStatus = statusFilter === 'Todos' || proj.status === statusFilter;
       const matchCliente = clienteFilter === 'Todos' || proj.cliente_id === clienteFilter;
-      return matchSearch && matchStatus && matchCliente;
+      if (!matchSearch || !matchStatus || !matchCliente) return false;
+
+      if (canViewPrazo && prazoFilter !== 'Todos') {
+        const aval = avaliarPrazoProjeto(proj, configEmpresa, maquinas, nowMs, projetos);
+        if (prazoFilter === 'Atrasados' && aval.statusCalendario !== 'atrasado') return false;
+        if (prazoFilter === 'Apertados' && aval.statusTempoHabil !== 'apertado') return false;
+        if (prazoFilter === 'Sem tempo hábil' && aval.statusTempoHabil !== 'nao') return false;
+      }
+
+      return true;
     });
-  }, [projetos, searchTerm, statusFilter, clienteFilter]);
+  }, [
+    projetos,
+    searchTerm,
+    statusFilter,
+    clienteFilter,
+    prazoFilter,
+    canViewPrazo,
+    configEmpresa,
+    maquinas,
+    nowMs,
+  ]);
 
   // --- CONTROLE DE VISUALIZAÇÃO E FILTRAGEM DE COMPONENTES ---
   const [selectedComponentIdForDetail, setSelectedComponentIdForDetail] = useState<string | null>(null);
@@ -600,6 +665,10 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       cliente_id: clientes[0]?.id || '',
       descricao: '',
       prazo: '',
+      data_inicio: '',
+      data_entrega: '',
+      prazo_horas: '',
+      prazo_origem: 'data',
       status: 'Aguardando',
     });
     setProjectErrors({});
@@ -608,6 +677,17 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
 
   const handleOpenEditProject = (proj: ProjetoComDetalhes, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    const resolved = recalcularCamposPrazoProjeto(
+      {
+        data_inicio: proj.data_inicio || undefined,
+        referencia_inicio: new Date().toISOString(),
+        data_entrega: proj.data_entrega,
+        prazo: proj.prazo,
+        prazo_horas: proj.prazo_horas,
+        prazo_origem: proj.prazo_origem || 'data',
+      },
+      configEmpresa
+    );
     setEditingProject(proj);
     setProjectForm({
       codigo: proj.codigo,
@@ -615,11 +695,30 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       planejador: proj.planejador || '',
       cliente_id: proj.cliente_id,
       descricao: proj.descricao,
-      prazo: proj.prazo,
+      prazo: resolved.prazo || proj.prazo,
+      data_inicio: proj.data_inicio || '',
+      data_entrega: proj.data_entrega || resolved.data_entrega,
+      prazo_horas: String(
+        proj.prazo_horas !== undefined ? proj.prazo_horas : resolved.prazo_horas
+      ),
+      prazo_origem: proj.prazo_origem || 'data',
       status: proj.status,
     });
     setProjectErrors({});
     setIsProjectModalOpen(true);
+  };
+
+  const handleIniciarProducaoProjeto = async (projetoId: string) => {
+    setIniciandoProducao(true);
+    try {
+      await toolShopService.iniciarProducaoProjeto(projetoId);
+      showFeedback('success', 'Início da produção registrado com a data e hora atuais.');
+      onRefresh();
+    } catch (err: any) {
+      showFeedback('error', err?.message || 'Erro ao iniciar produção do projeto.');
+    } finally {
+      setIniciandoProducao(false);
+    }
   };
 
   const handleSubmitProject = async (e: React.FormEvent) => {
@@ -628,25 +727,38 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
     if (!projectForm.codigo.trim()) errors.codigo = 'Código é obrigatório.';
     if (!projectForm.descricao.trim()) errors.descricao = 'Descrição é obrigatória.';
     if (!projectForm.cliente_id) errors.cliente_id = 'Selecione um cliente.';
-    if (!projectForm.prazo) errors.prazo = 'Prazo de entrega é obrigatório.';
+    if (!projectForm.data_entrega && !projectForm.prazo) {
+      errors.prazo = 'Prazo de entrega é obrigatório.';
+    }
 
     if (Object.keys(errors).length > 0) {
       setProjectErrors(errors);
       return;
     }
 
+    const parsedHoras = projectForm.prazo_horas.trim()
+      ? Number(projectForm.prazo_horas.replace(',', '.'))
+      : undefined;
+
     setIsSubmitting(true);
     try {
       if (editingProject) {
-        await toolShopService.updateProjeto(editingProject.id, {
+        const updatePayload: any = {
           codigo: projectForm.codigo.trim(),
           orcamento_codigo: projectForm.orcamento_codigo.trim() || undefined,
           planejador: projectForm.planejador.trim() || undefined,
           cliente_id: projectForm.cliente_id,
           descricao: projectForm.descricao.trim(),
-          prazo: projectForm.prazo,
           status: projectForm.status,
-        });
+        };
+        if (canEditPrazo) {
+          updatePayload.prazo = projectForm.prazo;
+          updatePayload.data_inicio = projectForm.data_inicio || '';
+          updatePayload.data_entrega = projectForm.data_entrega;
+          updatePayload.prazo_horas = Number.isFinite(parsedHoras) ? parsedHoras : undefined;
+          updatePayload.prazo_origem = projectForm.prazo_origem;
+        }
+        await toolShopService.updateProjeto(editingProject.id, updatePayload);
         showFeedback('success', `Projeto "${projectForm.codigo}" atualizado com sucesso!`);
       } else {
         const novo = await toolShopService.createProjeto({
@@ -656,6 +768,10 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
           cliente_id: projectForm.cliente_id,
           descricao: projectForm.descricao.trim(),
           prazo: projectForm.prazo,
+          data_inicio: projectForm.data_inicio || undefined,
+          data_entrega: projectForm.data_entrega || undefined,
+          prazo_horas: Number.isFinite(parsedHoras) ? parsedHoras : undefined,
+          prazo_origem: projectForm.prazo_origem,
           status: projectForm.status,
         });
         showFeedback('success', `Projeto "${novo.codigo}" criado com sucesso!`);
@@ -664,7 +780,9 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
       setIsProjectModalOpen(false);
       onRefresh();
     } catch (err: any) {
-      showFeedback('error', err.message || 'Erro ao salvar projeto.');
+      const msg = err?.message || 'Erro ao salvar projeto.';
+      setProjectErrors((prev) => ({ ...prev, submit: msg }));
+      showFeedback('error', msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -1427,7 +1545,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
           {/* Cabeçalho do Projeto */}
           <div
             className={`rounded-2xl border p-6 bg-white shadow-2xs transition-all ${
-              isProjectOverdue(selectedProject.prazo, selectedProject.status)
+              isProjectOverdue(selectedProject)
                 ? 'border-rose-300 ring-1 ring-rose-300'
                 : 'border-slate-200'
             }`}
@@ -1445,12 +1563,12 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                   <span
                     className={`rounded-md border px-2.5 py-0.5 text-xs font-semibold ${getProjectStatusStyle(
                       selectedProject.status,
-                      isProjectOverdue(selectedProject.prazo, selectedProject.status)
+                      isProjectOverdue(selectedProject)
                     )}`}
                   >
                     {selectedProject.status}
                   </span>
-                  {isProjectOverdue(selectedProject.prazo, selectedProject.status) && (
+                  {isProjectOverdue(selectedProject) && (
                     <span className="inline-flex items-center gap-1 rounded-md bg-rose-600 px-2.5 py-0.5 text-xs font-bold text-white">
                       <AlertTriangle className="h-3 w-3" />
                       <span>Prazo Vencido</span>
@@ -1641,6 +1759,20 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Cartão de Prazo do Projeto e Capacidade por Centro de Custo (Líder, Gerente e Admin) */}
+          {canViewPrazo && (
+            <PrazoProjetoCard
+              projeto={selectedProject}
+              projetosAtivos={projetos}
+              configuracoes={configEmpresa}
+              centrosCusto={maquinas}
+              canEditPrazo={canEditPrazo}
+              onClickEditarPrazo={() => handleOpenEditProject(selectedProject)}
+              onClickIniciarProducao={() => handleIniciarProducaoProjeto(selectedProject.id)}
+              iniciandoProducao={iniciandoProducao}
+            />
+          )}
 
           {/* Abas de Navegação Interna do Projeto */}
           <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
@@ -3282,6 +3414,33 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             </div>
           </div>
 
+          {/* Filtros rápidos de Prazo / Tempo Hábil (Líder, Gerente e Admin) */}
+          {canViewPrazo && (
+            <div className="flex flex-wrap items-center gap-2">
+              {(['Todos', 'Atrasados', 'Apertados', 'Sem tempo hábil'] as const).map((filtro) => {
+                const active = prazoFilter === filtro;
+                return (
+                  <button
+                    key={filtro}
+                    type="button"
+                    onClick={() => setPrazoFilter(filtro)}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                      active
+                        ? filtro === 'Atrasados' || filtro === 'Sem tempo hábil'
+                          ? 'border-rose-600 bg-rose-600 text-white'
+                          : filtro === 'Apertados'
+                          ? 'border-amber-500 bg-amber-500 text-white'
+                          : 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {filtro}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* Tabela de Projetos ou Estado Vazio */}
           {projetos.length === 0 ? (
             <EmptyState
@@ -3295,12 +3454,13 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             <EmptyState
               icon={Search}
               title="Nenhum projeto encontrado"
-              description={`Nenhum projeto corresponde ao termo "${searchTerm}" ou aos filtros de status/cliente selecionados.`}
+              description={`Nenhum projeto corresponde ao termo "${searchTerm}" ou aos filtros de status/cliente/prazo selecionados.`}
               actionLabel="Limpar Filtros e Busca"
               onAction={() => {
                 setSearchTerm('');
                 setStatusFilter('Todos');
                 setClienteFilter('Todos');
+                setPrazoFilter('Todos');
               }}
             />
           ) : (
@@ -3312,7 +3472,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                       <th className="py-3.5 px-4">Código</th>
                       <th className="py-3.5 px-4">Cliente</th>
                       <th className="py-3.5 px-4">Descrição da Ferramenta</th>
-                      <th className="py-3.5 px-4">Prazo de Entrega</th>
+                      {canViewPrazo && <th className="py-3.5 px-4">Prazo</th>}
                       <th className="py-3.5 px-4">Status</th>
                       <th className="py-3.5 px-4 min-w-[160px]">Progresso de Usinagem</th>
                       <th className="py-3.5 px-4 text-right">Ações</th>
@@ -3320,7 +3480,7 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
                     {filteredProjetos.map((proj) => {
-                      const overdue = isProjectOverdue(proj.prazo, proj.status);
+                      const overdue = isProjectOverdue(proj);
                       const percent =
                         proj.totalOperacoes > 0
                           ? Math.round(
@@ -3360,28 +3520,18 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
                             </div>
                           </td>
 
-                          {/* Prazo com Destaque Vermelho se Vencido */}
-                          <td className="py-3.5 px-4">
-                            <div className="flex items-center gap-1.5 font-mono">
-                              <Calendar
-                                className={`h-3.5 w-3.5 ${
-                                  overdue ? 'text-rose-600' : 'text-slate-400'
-                                }`}
+                          {/* Prazo (tempo restante, mini barra e selos) - oculto para Operador */}
+                          {canViewPrazo && (
+                            <td className="py-3.5 px-4">
+                              <PrazoListaCelula
+                                projeto={proj}
+                                projetosAtivos={projetos}
+                                configuracoes={configEmpresa}
+                                centrosCusto={maquinas}
+                                nowMs={nowMs}
                               />
-                              <span
-                                className={`font-semibold ${
-                                  overdue ? 'text-rose-700' : 'text-slate-700'
-                                }`}
-                              >
-                                {formatDateBR(proj.prazo)}
-                              </span>
-                            </div>
-                            {overdue && (
-                              <span className="inline-block mt-0.5 rounded bg-rose-100 px-1.5 py-0.2 font-mono text-[10px] font-bold text-rose-800">
-                                Prazo Vencido
-                              </span>
-                            )}
-                          </td>
+                            </td>
+                          )}
 
                           {/* Status */}
                           <td className="py-3.5 px-4">
@@ -3482,9 +3632,15 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             ? `Atualize dados gerais de ${editingProject.codigo}`
             : 'Cadastre um novo molde, estampo ou dispositivo para usinagem'
         }
-        maxWidth="md"
+        maxWidth="lg"
       >
         <form onSubmit={handleSubmitProject} className="space-y-4">
+          {projectErrors.submit && (
+            <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-800">
+              <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+              <span>{projectErrors.submit}</span>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-slate-700">
@@ -3582,41 +3738,38 @@ export const ProjetosView: React.FC<ProjetosViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700">
-                Prazo de Entrega <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="date"
-                value={projectForm.prazo}
-                onChange={(e) => {
-                  setProjectForm({ ...projectForm, prazo: e.target.value });
-                  if (projectErrors.prazo) setProjectErrors({ ...projectErrors, prazo: '' });
-                }}
-                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 font-mono text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
-              />
-              {projectErrors.prazo && (
-                <p className="mt-1 text-xs text-rose-600">{projectErrors.prazo}</p>
-              )}
-            </div>
+          {canEditPrazo && (
+            <ProjetoPrazoModalFields
+              isEditing={Boolean(editingProject)}
+              initialDataInicio={editingProject?.data_inicio || ''}
+              dataInicio={projectForm.data_inicio}
+              dataEntrega={projectForm.data_entrega}
+              prazoHoras={projectForm.prazo_horas}
+              prazoOrigem={projectForm.prazo_origem}
+              configuracoes={configEmpresa}
+              errorPrazo={projectErrors.prazo}
+              onChange={(next) => {
+                setProjectForm((prev) => ({ ...prev, ...next }));
+                if (projectErrors.prazo) setProjectErrors({ ...projectErrors, prazo: '' });
+              }}
+            />
+          )}
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700">Status</label>
-              <select
-                value={projectForm.status}
-                onChange={(e) =>
-                  setProjectForm({ ...projectForm, status: e.target.value as StatusProjeto })
-                }
-                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
-              >
-                {STATUS_PROJETO_OPTIONS.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700">Status</label>
+            <select
+              value={projectForm.status}
+              onChange={(e) =>
+                setProjectForm({ ...projectForm, status: e.target.value as StatusProjeto })
+              }
+              className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+            >
+              {STATUS_PROJETO_OPTIONS.map((st) => (
+                <option key={st} value={st}>
+                  {st}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">

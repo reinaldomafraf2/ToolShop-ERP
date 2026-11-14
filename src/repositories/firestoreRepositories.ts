@@ -11,7 +11,7 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-import { db, cleanFirestoreData } from '../firebase/config';
+import { auth, db, cleanFirestoreData } from '../firebase/config';
 import { handleFirestoreError, OperationType } from '../firebase/errors';
 import { syncStatusService } from '../services/syncStatusService';
 import {
@@ -80,6 +80,8 @@ import {
 export class FirestoreBaseRepository<T extends { id: string; empresa_id: string }>
   implements IBaseRepository<T>
 {
+  protected throwOnSignedInError = false;
+
   constructor(
     protected collectionName: string,
     protected localRepo: IBaseRepository<T>
@@ -142,6 +144,21 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
       empresa_id: item.empresa_id || DEFAULT_EMPRESA_ID,
     } as T;
 
+    if (this.throwOnSignedInError && auth.currentUser) {
+      try {
+        const docRef = doc(db, this.collectionName, finalId);
+        await setDoc(docRef, cleanFirestoreData(finalItem));
+        syncStatusService.recordSuccess(`gravação ${this.collectionName}`);
+      } catch (err: any) {
+        syncStatusService.recordError(err, `gravação ${this.collectionName}`);
+        throw new Error(
+          `Erro ao gravar em ${this.collectionName}: ${err?.message || 'permissão ou conexão.'}`
+        );
+      }
+      await this.localRepo.create(finalItem).catch(() => {});
+      return finalItem;
+    }
+
     // Salva localmente primeiro para resposta imediata
     await this.localRepo.create(finalItem).catch(() => {});
 
@@ -158,6 +175,20 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
   }
 
   async update(id: string, updates: Partial<T>): Promise<T> {
+    if (this.throwOnSignedInError && auth.currentUser) {
+      try {
+        const docRef = doc(db, this.collectionName, id);
+        await updateDoc(docRef, cleanFirestoreData(updates as Record<string, any>));
+        syncStatusService.recordSuccess(`gravação ${this.collectionName}`);
+      } catch (err: any) {
+        syncStatusService.recordError(err, `gravação ${this.collectionName}`);
+        throw new Error(
+          `Erro ao atualizar ${this.collectionName}: ${err?.message || 'permissão ou conexão.'}`
+        );
+      }
+      return this.localRepo.update(id, updates);
+    }
+
     const updated = await this.localRepo.update(id, updates);
     try {
       const docRef = doc(db, this.collectionName, id);
@@ -171,6 +202,21 @@ export class FirestoreBaseRepository<T extends { id: string; empresa_id: string 
   }
 
   async delete(id: string): Promise<boolean> {
+    if (this.throwOnSignedInError && auth.currentUser) {
+      try {
+        const docRef = doc(db, this.collectionName, id);
+        await deleteDoc(docRef);
+        syncStatusService.recordSuccess(`exclusão ${this.collectionName}`);
+      } catch (err: any) {
+        syncStatusService.recordError(err, `exclusão ${this.collectionName}`);
+        throw new Error(
+          `Erro ao excluir em ${this.collectionName}: ${err?.message || 'permissão ou conexão.'}`
+        );
+      }
+      await this.localRepo.delete(id).catch(() => {});
+      return true;
+    }
+
     await this.localRepo.delete(id).catch(() => {});
     try {
       const docRef = doc(db, this.collectionName, id);
@@ -227,6 +273,7 @@ export class FirestoreCentroCustoRepository
 {
   constructor() {
     super('centros_custo', localCentroCustoRepo);
+    this.throwOnSignedInError = true;
   }
 
   async getByCategoria(
@@ -274,6 +321,7 @@ export class FirestoreProjetoRepository
 {
   constructor() {
     super('projetos', localProjetoRepo);
+    this.throwOnSignedInError = true;
   }
 
   async getByClienteId(
@@ -578,12 +626,17 @@ export class FirestoreConfiguracoesRepository
     empresaId: string = DEFAULT_EMPRESA_ID
   ): Promise<ConfiguracoesSistema> {
     const current = await this.getConfig(empresaId);
-    const updated = { ...current, ...updates };
+    const updated = cleanFirestoreData({ ...current, ...updates });
     try {
       await setDoc(doc(db, this.collectionName, 'config_padrao'), updated, { merge: true });
       syncStatusService.recordSuccess(`gravação ${this.collectionName}`);
-    } catch (err) {
+    } catch (err: any) {
       syncStatusService.recordError(err, `gravação ${this.collectionName}`);
+      if (auth.currentUser) {
+        throw new Error(
+          `Erro ao gravar configurações no servidor: ${err?.message || 'permissão ou conexão.'}`
+        );
+      }
       console.warn('Falha ao atualizar config no Firestore:', err);
     }
     return (this.localRepo as any).updateConfig(updates, empresaId);

@@ -74,6 +74,9 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
     prazo_padrao_dias: '',
     ativo: true,
     observacoes: '',
+    capacidade_paralela: '1',
+    horas_por_dia: '',
+    disponibilidade_percentual: '',
   });
   const [formErrors, setFormErrors] = useState<{ [key: string]: string | undefined }>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -232,6 +235,9 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
       prazo_padrao_dias: '',
       ativo: true,
       observacoes: '',
+      capacidade_paralela: '1',
+      horas_por_dia: '',
+      disponibilidade_percentual: '',
     });
     setFormErrors({});
     setIsFormModalOpen(true);
@@ -250,6 +256,14 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
       prazo_padrao_dias: centro.prazo_padrao_dias ? String(centro.prazo_padrao_dias) : '',
       ativo: centro.ativo !== false,
       observacoes: centro.observacoes || '',
+      capacidade_paralela:
+        centro.capacidade_paralela !== undefined ? String(centro.capacidade_paralela) : '1',
+      horas_por_dia:
+        centro.horas_por_dia !== undefined ? String(centro.horas_por_dia).replace('.', ',') : '',
+      disponibilidade_percentual:
+        centro.disponibilidade_percentual !== undefined
+          ? String(centro.disponibilidade_percentual).replace('.', ',')
+          : '',
     });
     setFormErrors({});
     setIsFormModalOpen(true);
@@ -298,7 +312,36 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
       errors.valor_unitario = 'O valor deve ser um número maior que zero.';
     }
 
-    if (formData.origem === 'terceirizado') {
+    let capParalelaNum: number | undefined = undefined;
+    let horasPorDiaNum: number | undefined = undefined;
+    let disponibilidadeNum: number | undefined = undefined;
+
+    if (formData.origem === 'interno') {
+      const cp = Number(formData.capacidade_paralela.replace(',', '.'));
+      if (!Number.isFinite(cp) || cp < 1) {
+        errors.capacidade_paralela = 'A capacidade paralela deve ser pelo menos 1.';
+      } else {
+        capParalelaNum = Math.floor(cp);
+      }
+
+      if (formData.horas_por_dia.trim()) {
+        const hd = Number(formData.horas_por_dia.replace(',', '.'));
+        if (!Number.isFinite(hd) || hd <= 0 || hd > 24) {
+          errors.horas_por_dia = 'Informe entre 0,25 e 24 horas por dia (ou deixe vazio para usar o expediente padrão).';
+        } else {
+          horasPorDiaNum = hd;
+        }
+      }
+
+      if (formData.disponibilidade_percentual.trim()) {
+        const dp = Number(formData.disponibilidade_percentual.replace(',', '.'));
+        if (!Number.isFinite(dp) || dp <= 0 || dp > 100) {
+          errors.disponibilidade_percentual = 'Informe entre 1% e 100% (ou deixe vazio para usar o padrão).';
+        } else {
+          disponibilidadeNum = dp;
+        }
+      }
+    } else if (formData.origem === 'terceirizado') {
       if (formData.prazo_padrao_dias && (isNaN(Number(formData.prazo_padrao_dias)) || Number(formData.prazo_padrao_dias) < 0)) {
         errors.prazo_padrao_dias = 'O prazo deve ser um número inteiro de dias válido.';
       }
@@ -322,6 +365,9 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
         fornecedor_nome: formData.origem === 'terceirizado' && formData.fornecedor_nome.trim() ? formData.fornecedor_nome.trim() : undefined,
         fornecedor_contato: formData.origem === 'terceirizado' && formData.fornecedor_contato.trim() ? formData.fornecedor_contato.trim() : undefined,
         prazo_padrao_dias: formData.origem === 'terceirizado' && formData.prazo_padrao_dias ? Number(formData.prazo_padrao_dias) : undefined,
+        capacidade_paralela: formData.origem === 'interno' ? (capParalelaNum ?? 1) : undefined,
+        horas_por_dia: formData.origem === 'interno' ? horasPorDiaNum : undefined,
+        disponibilidade_percentual: formData.origem === 'interno' ? disponibilidadeNum : undefined,
         ativo: formData.ativo,
         observacoes: formData.observacoes.trim() || undefined,
       };
@@ -336,7 +382,9 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
       setIsFormModalOpen(false);
       onRefresh();
     } catch (err: any) {
-      showFeedback('error', err.message || 'Erro ao salvar centro de custo.');
+      const msg = err?.message || 'Erro ao salvar centro de custo.';
+      setFormErrors((prev) => ({ ...prev, submit: msg }));
+      showFeedback('error', msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -594,16 +642,25 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
                             </div>
                           </div>
                         ) : (
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedPostoParaOperadores(centro)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 hover:border-slate-300 transition-colors shadow-2xs"
-                              title="Gerenciar operadores deste posto de trabalho"
-                            >
-                              <Users className="h-3.5 w-3.5 text-slate-500" />
-                              <span>{(vinculosPorCentroMap.get(centro.id) || []).length} operador(es)</span>
-                            </button>
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedPostoParaOperadores(centro)}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 hover:border-slate-300 transition-colors shadow-2xs"
+                                title="Gerenciar operadores deste posto de trabalho"
+                              >
+                                <Users className="h-3.5 w-3.5 text-slate-500" />
+                                <span>{(vinculosPorCentroMap.get(centro.id) || []).length} operador(es)</span>
+                              </button>
+                            </div>
+                            <div className="font-mono text-[10px] text-slate-500">
+                              Cap.: <strong className="text-slate-700">{centro.capacidade_paralela ?? 1}x</strong> ·{' '}
+                              {centro.horas_por_dia ? `${centro.horas_por_dia}h/d` : 'exp. padrão'} ·{' '}
+                              {centro.disponibilidade_percentual !== undefined
+                                ? `${centro.disponibilidade_percentual}% disp.`
+                                : 'disp. padrão'}
+                            </div>
                           </div>
                         )}
                       </td>
@@ -692,6 +749,12 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
         maxWidth="lg"
       >
         <form onSubmit={handleSubmitForm} className="space-y-4">
+          {formErrors.submit && (
+            <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-800">
+              <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+              <span>{formErrors.submit}</span>
+            </div>
+          )}
           {/* Seletor de Origem: Interno vs Terceirizado */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -886,6 +949,98 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
               )}
             </div>
           </div>
+
+          {/* Capacidade produtiva para Centro de Custo Interno */}
+          {formData.origem === 'interno' && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-blue-950">
+                  <Cpu className="h-4 w-4 text-blue-700" />
+                  <span>Capacidade para Cálculo de Tempo Hábil</span>
+                </div>
+                <span className="text-[10px] text-blue-800 font-medium">
+                  Opcional: vazio usa padrão do Calendário
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Capacidade paralela
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="1"
+                    value={formData.capacidade_paralela}
+                    onChange={(e) => {
+                      setFormData({ ...formData, capacidade_paralela: e.target.value });
+                      if (formErrors.capacidade_paralela)
+                        setFormErrors({ ...formErrors, capacidade_paralela: undefined });
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+                  />
+                  <span className="mt-0.5 block text-[10px] text-slate-500">
+                    Máquinas ou pessoas equivalentes
+                  </span>
+                  {formErrors.capacidade_paralela && (
+                    <p className="mt-1 text-xs text-rose-600">{formErrors.capacidade_paralela}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Horas/dia (opcional)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Padrão expediente"
+                    value={formData.horas_por_dia}
+                    onChange={(e) => {
+                      setFormData({ ...formData, horas_por_dia: e.target.value });
+                      if (formErrors.horas_por_dia)
+                        setFormErrors({ ...formErrors, horas_por_dia: undefined });
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+                  />
+                  <span className="mt-0.5 block text-[10px] text-slate-500">
+                    Vazio = horas líquidas do expediente
+                  </span>
+                  {formErrors.horas_por_dia && (
+                    <p className="mt-1 text-xs text-rose-600">{formErrors.horas_por_dia}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Disponibilidade % (opc.)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Padrão config (85%)"
+                    value={formData.disponibilidade_percentual}
+                    onChange={(e) => {
+                      setFormData({ ...formData, disponibilidade_percentual: e.target.value });
+                      if (formErrors.disponibilidade_percentual)
+                        setFormErrors({ ...formErrors, disponibilidade_percentual: undefined });
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-900 shadow-2xs focus:border-slate-900 focus:outline-none"
+                  />
+                  <span className="mt-0.5 block text-[10px] text-slate-500">
+                    Setup, troca ferramenta e imprevistos
+                  </span>
+                  {formErrors.disponibilidade_percentual && (
+                    <p className="mt-1 text-xs text-rose-600">
+                      {formErrors.disponibilidade_percentual}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Campos exclusivos para Terceirizado: Fornecedor, Contato e Prazo */}
           {formData.origem === 'terceirizado' && (

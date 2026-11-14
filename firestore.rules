@@ -62,7 +62,10 @@ service cloud.firestore {
              data.nome is string && data.nome.size() > 0 && data.nome.size() <= 100 &&
              data.origem in ['interno', 'terceirizado'] &&
              data.modelo_custo in ['hora', 'peca', 'kg', 'servico'] &&
-             data.ativo is bool;
+             data.ativo is bool &&
+             (!('capacidade_paralela' in data) || data.capacidade_paralela == null || (data.capacidade_paralela is number && data.capacidade_paralela > 0 && data.capacidade_paralela <= 1000)) &&
+             (!('horas_por_dia' in data) || data.horas_por_dia == null || (data.horas_por_dia is number && data.horas_por_dia > 0 && data.horas_por_dia <= 24)) &&
+             (!('disponibilidade_percentual' in data) || data.disponibilidade_percentual == null || (data.disponibilidade_percentual is number && data.disponibilidade_percentual > 0 && data.disponibilidade_percentual <= 100));
     }
 
     match /centros_custo/{centroCustoId} {
@@ -95,7 +98,15 @@ service cloud.firestore {
              data.cliente_id is string && data.cliente_id.size() <= 128 &&
              data.codigo is string && data.codigo.size() > 0 && data.codigo.size() <= 50 &&
              data.descricao is string && data.descricao.size() > 0 && data.descricao.size() <= 250 &&
-             data.status in ['Aguardando', 'Em andamento', 'Em tryout', 'Concluído', 'Cancelado'];
+             data.status in ['Aguardando', 'Em andamento', 'Em tryout', 'Concluído', 'Cancelado'] &&
+             (!('data_inicio' in data) || data.data_inicio == null || (data.data_inicio is string && data.data_inicio.size() <= 64)) &&
+             (!('data_entrega' in data) || data.data_entrega == null || (data.data_entrega is string && data.data_entrega.size() <= 64)) &&
+             (!('prazo_horas' in data) || data.prazo_horas == null || (data.prazo_horas is number && data.prazo_horas >= 0)) &&
+             (!('prazo_origem' in data) || data.prazo_origem == null || data.prazo_origem in ['horas', 'data']) &&
+             (!('horas_consumidas' in data) || data.horas_consumidas == null || (data.horas_consumidas is number && data.horas_consumidas >= 0)) &&
+             (!('horas_estimadas_total' in data) || data.horas_estimadas_total == null || (data.horas_estimadas_total is number && data.horas_estimadas_total >= 0)) &&
+             (!('horas_a_executar' in data) || data.horas_a_executar == null || (data.horas_a_executar is number && data.horas_a_executar >= 0)) &&
+             (!('horas_a_executar_por_cc' in data) || data.horas_a_executar_por_cc == null || (data.horas_a_executar_por_cc is map && data.horas_a_executar_por_cc.size() <= 200));
     }
 
     match /projetos/{projetoId} {
@@ -246,7 +257,15 @@ service cloud.firestore {
              (!('operacoes_sem_material_recebido' in data) || data.operacoes_sem_material_recebido in ['ignorar', 'avisar', 'bloquear']) &&
              (!('categorias_isentas_bloqueio_material' in data) || data.categorias_isentas_bloqueio_material is list) &&
              (!('permitir_saldo_negativo' in data) || data.permitir_saldo_negativo is bool) &&
-             (!('dias_alerta_reserva_parada' in data) || data.dias_alerta_reserva_parada is number);
+             (!('dias_alerta_reserva_parada' in data) || data.dias_alerta_reserva_parada is number) &&
+             (!('contagem_prazo' in data) || data.contagem_prazo in ['corridas', 'expediente']) &&
+             (!('expediente_dias_semana' in data) || data.expediente_dias_semana is list) &&
+             (!('expediente_inicio' in data) || (data.expediente_inicio is string && data.expediente_inicio.size() <= 10)) &&
+             (!('expediente_fim' in data) || (data.expediente_fim is string && data.expediente_fim.size() <= 10)) &&
+             (!('expediente_almoco_horas' in data) || (data.expediente_almoco_horas is number && data.expediente_almoco_horas >= 0 && data.expediente_almoco_horas <= 12)) &&
+             (!('feriados' in data) || data.feriados is list) &&
+             (!('atencao_percentual' in data) || (data.atencao_percentual is number && data.atencao_percentual >= 0 && data.atencao_percentual <= 100)) &&
+             (!('disponibilidade_percentual_padrao' in data) || (data.disponibilidade_percentual_padrao is number && data.disponibilidade_percentual_padrao >= 0 && data.disponibilidade_percentual_padrao <= 100));
     }
 
     match /configuracoes/{configId} {

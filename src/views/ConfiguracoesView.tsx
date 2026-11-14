@@ -36,6 +36,7 @@ import {
   Package,
 } from 'lucide-react';
 import { formatDateTimeBR } from '../utils/formatters';
+import { CalendarioTrabalhoCard } from '../components/configuracoes/CalendarioTrabalhoCard';
 
 interface ConfiguracoesViewProps {
   operadores: Operador[];
@@ -583,6 +584,16 @@ export const ConfiguracoesView: React.FC<ConfiguracoesViewProps> = ({
           </form>
         </div>
       )}
+
+      {/* Calendário de trabalho (Gerente e Administrador) */}
+      <CalendarioTrabalhoCard
+        config={config}
+        canEdit={canEdit}
+        usuarioNome={user?.nome || 'Administrador'}
+        onUpdated={setConfig}
+        onFeedback={showFeedback}
+        onRefresh={onRefresh}
+      />
 
       {/* Grid de Configurações */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
